@@ -1,7 +1,7 @@
 {
   "name": "inline-images",
   "version": "1.0.0",
-  "description": "Gives Claude a show_image tool and shows pasted images inline in the terminal transcript",
+  "description": "Gives Claude a show_image tool and shows pasted images and images Claude reads inline in the terminal transcript",
   "author": {
     "name": "Mechazawa"
   },
@@ -13,6 +13,12 @@
       "type": "boolean",
       "title": "Show pasted images",
       "description": "Draw the images you paste into the prompt inline in the transcript",
+      "default": true
+    },
+    "showReadImages": {
+      "type": "boolean",
+      "title": "Show images Claude reads",
+      "description": "Draw the images Claude opens with Read inline in the transcript",
       "default": true
     }
   }

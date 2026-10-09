@@ -8,6 +8,7 @@ const FULL_NAME = 'mcp__inline-images__show_image'
 const CONVERTED_DIR = '/tmp/claude-inline-images'
 const MAX_ROWS = 40
 const PASTED_COLUMNS = 40
+const READ_COLUMNS = 60
 // A terminal cell is about twice as tall as it is wide.
 const CELL_ASPECT = 2
 const DEFAULT_COLOR = 0x01000000
@@ -174,6 +175,8 @@ const picture = async ($: EngineInterface, { Image, Raster }: Elements['terminal
 }
 
 const pasted = atom({ plugin: 'inline-images', key: 'pasted' } as const, {})
+// Keyed by the tool_use_id of a Read that returned an image.
+const reads = atom({ plugin: 'inline-images', key: 'reads' } as const, {})
 
 // A UserMessage row's requestId is its stored row's uuid with the last group zeroed.
 const rowKey = (id: string) => id.slice(0, 23)
@@ -233,6 +236,63 @@ export const register: Register = (on, options) => {
 
     return (await picture($, $.ui.resolve(e), shown, (e.viewport?.columns ?? 80) - 6, e.requestId)) ?? next(e)
   })
+
+  if (options.showReadImages !== false) {
+    on('tool.call', { tool: 'Read' }, async ($, e, next) => {
+      const ran = await next(e)
+
+      if (ran.isError || ran.result?.type !== 'image') {
+        return ran
+      }
+
+      const using = await (converter ??= findConverter($)).catch(() => undefined)
+      const shown = using && (await describe($, using, e.file_path, READ_COLUMNS).catch(() => undefined))
+
+      if (shown) {
+        await update($, reads, all => ({ ...all, [e.tool_use_id]: shown })).catch(() => undefined)
+      }
+
+      return ran
+    }).catch(($, e, next) => next(e))
+
+    on('ui.render', { component: 'ToolUse', props: { tool: 'Read' } }, async ($, e, next) => {
+      const shown = (await read($, reads))[e.props.tool_use_id]
+
+      if (e.surface !== 'terminal' || shown === undefined) {
+        return next(e)
+      }
+
+      const elements = $.ui.resolve(e)
+
+      return (
+        <elements.Box flexDirection="column">
+          {await next(e)}
+          {await picture($, elements, shown, (e.viewport?.columns ?? 80) - 6, e.requestId)}
+        </elements.Box>
+      )
+    })
+
+    // A folded group draws one count line and no rows, so its image Reads are drawn under that line.
+    on('ui.render', { component: 'ToolGroup' }, async ($, e, next) => {
+      const all = await read($, reads)
+      const shown = e.props.calls.flatMap(call => (call.tool_use_id === undefined ? [] : (all[call.tool_use_id] ?? [])))
+
+      if (e.surface !== 'terminal' || e.props.isExpanded || shown.length === 0) {
+        return next(e)
+      }
+
+      const elements = $.ui.resolve(e)
+      const available = (e.viewport?.columns ?? 80) - 6
+      const pictures = await Promise.all(shown.map((one, index) => picture($, elements, one, available, `${e.requestId}-${index}`)))
+
+      return (
+        <elements.Box flexDirection="column">
+          {await next(e)}
+          {pictures}
+        </elements.Box>
+      )
+    })
+  }
 
   if (options.showPastedImages === false) {
     return
