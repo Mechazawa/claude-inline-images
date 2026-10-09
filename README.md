@@ -45,9 +45,14 @@ The image keeps its aspect ratio. It is never wider than the transcript and neve
 - A terminal with 24-bit color. [Ghostty](https://ghostty.org) and [kitty](https://sw.kovidgoyal.net/kitty/) show the
   image at full resolution with the kitty graphics protocol. Other terminals, such as iTerm2, and all terminals inside
   tmux show the image as colored half-block characters, two pixels per cell.
-- macOS. The mod reads the image size with `sips`. It also uses `sips` to convert JPEG, GIF, WebP, HEIC and TIFF files
-  to PNG for the kitty graphics protocol, and to BMP for the half blocks. Converted files go to
-  `/tmp/claude-inline-images`.
+- An image tool. The mod uses it to read the image size, to convert JPEG, GIF, WebP, HEIC and TIFF files to PNG for
+  the kitty graphics protocol, and to convert images to BMP for the half blocks. It uses the first one it finds:
+  1. `sips`, which macOS includes.
+  2. [ImageMagick](https://imagemagick.org), version 6 or 7. On Linux, install it, for example with
+     `sudo apt install imagemagick`.
+  3. [ffmpeg](https://ffmpeg.org) with `ffprobe`.
+
+  Converted files go to `/tmp/claude-inline-images`.
 
 ## Development
 

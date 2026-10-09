@@ -98,3 +98,17 @@ test('refuses a missing file', async ($, on) => {
   const ran = await $.tool.call({ tool: TOOL, path: 'nope.png' })
   expect(ran.deny).toBe('nope.png does not exist')
 })
+
+test('falls back to ImageMagick where sips is missing', async ($, on) => {
+  const commands: string[][] = []
+  on('fs.stat', () => ({ value: { kind: 'file', size: 1, mtimeMs: 0, isLink: false, realPath: '/x/cat.jpg' } }))
+  on('process.run', (_$, e) => {
+    commands.push([...e.argv])
+
+    return { value: { ...SIPS, exitCode: e.argv.at(-1) === 'command -v sips' ? 1 : 0, stdout: 'width=400 height=400' } }
+  })
+
+  const ran = await $.tool.call({ tool: TOOL, path: 'cat.jpg' })
+  expect(JSON.parse(ran.result as string)).toEqual(expect.objectContaining({ width: 400, height: 400 }))
+  expect(commands.filter(argv => argv[0] !== 'sh' && argv[0] !== 'mkdir').map(argv => argv[0])).toEqual(['magick', 'magick'])
+})
