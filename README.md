@@ -3,10 +3,14 @@
 A Claude Code mod that shows images inline in your terminal.
 
 It gives Claude a `show_image` tool. When you ask Claude to show you an image, the tool draws the file in the
-transcript with the kitty graphics protocol. The image does not go into Claude's context. Claude uses `Read`
-when it must look at the image itself.
+transcript. The image does not go into Claude's context. Claude uses `Read` when it must look at the image itself.
 
 ![Claude Code in Ghostty, showing a JPEG inline with show_image](docs/screenshot.png)
+
+Claude Code does not draw real images in iTerm2, so there the mod uses a fallback: colored half-block characters,
+two pixels per cell.
+
+![Claude Code in iTerm2, showing the same image as half blocks](docs/screenshot-iterm2.png)
 
 ## Install
 
@@ -38,10 +42,12 @@ The image keeps its aspect ratio. It is never wider than the transcript and neve
 ## Requirements
 
 - Claude Code 2.1.275 or later.
-- A terminal with the kitty graphics protocol: [Ghostty](https://ghostty.org) or [kitty](https://sw.kovidgoyal.net/kitty/).
-  Other terminals show the file path in place of the image. tmux does not pass the images through.
-- macOS. The mod reads the image size with `sips`. The terminal decodes PNG only, so the mod also uses `sips` to
-  convert JPEG, GIF, WebP, HEIC and TIFF files. Converted files go to `/tmp/claude-inline-images`.
+- A terminal with 24-bit color. [Ghostty](https://ghostty.org) and [kitty](https://sw.kovidgoyal.net/kitty/) show the
+  image at full resolution with the kitty graphics protocol. Other terminals, such as iTerm2, and all terminals inside
+  tmux show the image as colored half-block characters, two pixels per cell.
+- macOS. The mod reads the image size with `sips`. It also uses `sips` to convert JPEG, GIF, WebP, HEIC and TIFF files
+  to PNG for the kitty graphics protocol, and to BMP for the half blocks. Converted files go to
+  `/tmp/claude-inline-images`.
 
 ## Development
 
