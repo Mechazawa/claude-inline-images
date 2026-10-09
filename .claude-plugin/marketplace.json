@@ -1,0 +1,6 @@
+{
+  "name": "claude-inline-images",
+  "owner": { "name": "Mechazawa" },
+  "description": "Inline images in the Claude Code terminal",
+  "plugins": [{ "name": "inline-images", "source": "./" }]
+}
