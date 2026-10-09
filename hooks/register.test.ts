@@ -112,3 +112,52 @@ test('falls back to ImageMagick where sips is missing', async ($, on) => {
   expect(JSON.parse(ran.result as string)).toEqual(expect.objectContaining({ width: 400, height: 400 }))
   expect(commands.filter(argv => argv[0] !== 'sh' && argv[0] !== 'mkdir').map(argv => argv[0])).toEqual(['magick', 'magick'])
 })
+
+const PROMPT_ROW = 'c68be964-85c5-4f99-896a-6223a68b0693'
+
+const pastedImages = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1]) => {
+  mock.env(on, { TERM_PROGRAM: 'ghostty' })
+  on('process.run', () => ({ value: SIPS }))
+  on('ui.render', () => ({ type: 'engine', ref: 0 }))
+
+  await $.session.append({
+    uuid: PROMPT_ROW,
+    door: 'prompt',
+    origin: { kind: 'composer' },
+    message: {
+      type: 'user',
+      role: 'user',
+      content: [
+        { type: 'text', text: '[Image #1]' },
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: '' } },
+      ],
+    },
+  })
+  await $.session.append({
+    uuid: '2a56bb66-ec63-4d7c-ba83-97f09b5fdf7e',
+    door: 'note',
+    origin: { kind: 'composer' },
+    message: { type: 'user', role: 'user', isMeta: true, content: [{ type: 'text', text: '[Image: source: /x/paste.png]' }] },
+  })
+
+  const ui = await $.ui.mount({
+    plugin: 'inline-images',
+    surface: 'terminal',
+    component: 'UserMessage',
+    requestId: 'c68be964-85c5-4f99-896a-000000000000',
+    props: { text: '[Image #1]', origin: { kind: 'composer' }, isExpanded: false },
+    viewport: { columns: 120, rows: 40 },
+  })
+
+  return ui.find({ type: 'Image' })
+}
+
+test('draws a pasted image under its prompt', async ($, on) => {
+  const image = await pastedImages($, on)
+
+  expect(image?.props).toEqual(expect.objectContaining({ source: { file: '/x/paste.png', format: 'png' }, columns: 40, rows: 20 }))
+})
+
+test('leaves pasted images out when showPastedImages is off', { options: { showPastedImages: false } }, async ($, on) => {
+  expect(await pastedImages($, on)).toBeUndefined()
+})

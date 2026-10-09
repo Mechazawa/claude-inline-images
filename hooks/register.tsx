@@ -1,17 +1,19 @@
-import type { EngineInterface, Register } from 'claude-code'
+import { atom, read, update } from 'claude-code'
+import type { Elements, EngineInterface, Register } from 'claude-code'
+
+import type { Shown } from '../types'
 
 const TOOL = 'show_image'
 const FULL_NAME = 'mcp__inline-images__show_image'
 const CONVERTED_DIR = '/tmp/claude-inline-images'
 const MAX_ROWS = 40
+const PASTED_COLUMNS = 40
 // A terminal cell is about twice as tall as it is wide.
 const CELL_ASPECT = 2
 const DEFAULT_COLOR = 0x01000000
 const SPACE = 0x20
 const UPPER_HALF_BLOCK = 0x2580
 const LOWER_HALF_BLOCK = 0x2584
-
-type Shown = { file: string; width: number; height: number; columns?: number }
 
 // The BMP must be 24-bit, or 32-bit with alpha in the fourth byte, for rasterCells to read it.
 type Converter = {
@@ -140,7 +142,44 @@ const rasterCells = async ($: EngineInterface, using: Converter, file: string, c
 
 const rasters = new Map<string, Promise<string>>()
 
-export const register: Register = on => {
+const describe = async ($: EngineInterface, using: Converter, path: string, columns?: number): Promise<Shown> => {
+  const file = await asPng($, using, path)
+  const size = await pixelSize($, using, file)
+
+  if (size.width === 0 || size.height === 0) {
+    throw new Error(`${path} is not an image ${using.binaries[0]} can read`)
+  }
+
+  return { file, ...size, columns }
+}
+
+const picture = async ($: EngineInterface, { Image, Raster }: Elements['terminal'], shown: Shown, available: number, key: string) => {
+  const box = cellBox(shown, available)
+
+  if ((await $.env.get('TERM_PROGRAM')) === 'ghostty' || (await $.env.get('TERM')) === 'xterm-kitty') {
+    return <Image source={{ file: shown.file, format: 'png' }} {...box} alt={shown.file} />
+  }
+
+  const using = await (converter ??= findConverter($))
+
+  if (using === undefined) {
+    return undefined
+  }
+
+  const cacheKey = `${shown.file}:${box.columns}x${box.rows}`
+  const cells = rasters.get(cacheKey) ?? rasterCells($, using, shown.file, box.columns, box.rows)
+  rasters.set(cacheKey, cells)
+
+  return <Raster key={key} {...box} cells={await cells} />
+}
+
+const pasted = atom({ plugin: 'inline-images', key: 'pasted' } as const, {})
+
+// A UserMessage row's requestId is its stored row's uuid with the last group zeroed.
+const rowKey = (id: string) => id.slice(0, 23)
+
+
+export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     await $.tool.register({
       name: TOOL,
@@ -180,14 +219,7 @@ export const register: Register = on => {
       return { deny: 'show_image needs sips (macOS), ImageMagick or ffmpeg to read images' }
     }
 
-    const file = await asPng($, using, real)
-    const size = await pixelSize($, using, file)
-
-    if (size.width === 0 || size.height === 0) {
-      return { deny: `${input.path} is not an image ${using.binaries[0]} can read` }
-    }
-
-    const shown: Shown = { file, ...size, columns: typeof input.columns === 'number' ? input.columns : undefined }
+    const shown = await describe($, using, real, typeof input.columns === 'number' ? input.columns : undefined)
 
     return { result: JSON.stringify(shown) }
   }).catch(($, e, next) => ({ deny: `show_image failed: ${next.error.message ?? next.error.kind}` }))
@@ -199,23 +231,60 @@ export const register: Register = on => {
       return next(e)
     }
 
-    const { Image, Raster } = $.ui.resolve(e)
-    const box = cellBox(shown, (e.viewport?.columns ?? 80) - 6)
+    return (await picture($, $.ui.resolve(e), shown, (e.viewport?.columns ?? 80) - 6, e.requestId)) ?? next(e)
+  })
 
-    if ((await $.env.get('TERM_PROGRAM')) === 'ghostty' || (await $.env.get('TERM')) === 'xterm-kitty') {
-      return <Image source={{ file: shown.file, format: 'png' }} {...box} alt={shown.file} />
+  if (options.showPastedImages === false) {
+    return
+  }
+
+  // The prompt row holds the pasted image's bytes; the note row right after it names the file.
+  let pastedRow: string | undefined
+
+  on('session.append', { door: 'prompt' }, ($, e, next) => {
+    pastedRow = e.message.content.some(block => block.type === 'image') ? e.uuid : undefined
+
+    return next(e)
+  })
+
+  on('session.append', { door: 'note' }, async ($, e, next) => {
+    const appended = await next(e)
+    const files = e.message.content.flatMap(block =>
+      block.type === 'text' ? [...String(block.text).matchAll(/\[Image: source: ([^\]]+)\]/g)].map(match => match[1] ?? '') : [],
+    )
+    const row = pastedRow
+
+    if (row === undefined || files.length === 0) {
+      return appended
     }
 
-    const using = await (converter ??= findConverter($))
+    pastedRow = undefined
+    const using = await (converter ??= findConverter($)).catch(() => undefined)
 
-    if (using === undefined) {
+    if (using !== undefined) {
+      const shown = await Promise.all(files.map(file => describe($, using, file, PASTED_COLUMNS).catch(() => undefined)))
+      await update($, pasted, all => ({ ...all, [rowKey(row)]: shown.filter(one => one !== undefined) })).catch(() => undefined)
+    }
+
+    return appended
+  })
+
+  on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
+    const shown = (await read($, pasted))[rowKey(e.requestId)]
+
+    if (e.surface !== 'terminal' || shown === undefined) {
       return next(e)
     }
 
-    const key = `${shown.file}:${box.columns}x${box.rows}`
-    const cells = rasters.get(key) ?? rasterCells($, using, shown.file, box.columns, box.rows)
-    rasters.set(key, cells)
+    const elements = $.ui.resolve(e)
+    const available = (e.viewport?.columns ?? 80) - 6
+    const pictures = await Promise.all(shown.map((one, index) => picture($, elements, one, available, `${e.requestId}-${index}`)))
 
-    return <Raster key={e.requestId} {...box} cells={await cells} />
+    return (
+      <elements.Box flexDirection="column">
+        {await next(e)}
+        {pictures}
+      </elements.Box>
+    )
   })
 }

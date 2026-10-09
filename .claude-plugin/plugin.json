@@ -1,8 +1,19 @@
 {
   "name": "inline-images",
   "version": "1.0.0",
-  "description": "Gives Claude a show_image tool that draws an image inline in terminals with the kitty graphics protocol (Ghostty, kitty)",
-  "author": { "name": "Mechazawa" },
+  "description": "Gives Claude a show_image tool and shows pasted images inline in the terminal transcript",
+  "author": {
+    "name": "Mechazawa"
+  },
   "repository": "https://github.com/Mechazawa/claude-inline-images",
-  "license": "MIT"
+  "license": "MIT",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "showPastedImages": {
+      "type": "boolean",
+      "title": "Show pasted images",
+      "description": "Draw the images you paste into the prompt inline in the transcript",
+      "default": true
+    }
+  }
 }

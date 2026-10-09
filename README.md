@@ -5,6 +5,8 @@ A Claude Code mod that shows images inline in your terminal.
 It gives Claude a `show_image` tool. When you ask Claude to show you an image, the tool draws the file in the
 transcript. The image does not go into Claude's context. Claude uses `Read` when it must look at the image itself.
 
+It also draws the images you paste into the prompt, under your message in the transcript.
+
 ![Claude Code in Ghostty, showing a JPEG inline with show_image](docs/screenshot.png)
 
 Claude Code does not draw real images in iTerm2, so there the mod uses a fallback: colored half-block characters,
@@ -38,6 +40,13 @@ Claude calls `show_image` with these inputs:
 | `columns` | Width in terminal columns, 80 by default |
 
 The image keeps its aspect ratio. It is never wider than the transcript and never taller than 40 rows.
+
+### Pasted images
+
+When you paste an image into the prompt, the mod draws it 40 columns wide under your message. Images pasted
+before the mod was loaded are not drawn.
+
+To turn this off, open `/config` and set `inline-images.showPastedImages` to `false`.
 
 ## Requirements
 
