@@ -49,7 +49,7 @@ The image keeps its aspect ratio. It is never wider than the transcript and neve
   the kitty graphics protocol, and to convert images to BMP for the half blocks. It uses the first one it finds:
   1. `sips`, which macOS includes.
   2. [ImageMagick](https://imagemagick.org), version 6 or 7. On Linux, install it, for example with
-     `sudo apt install imagemagick`.
+     `sudo apt install imagemagick`. For HEIC files, also install `libheif-plugin-libde265`.
   3. [ffmpeg](https://ffmpeg.org) with `ffprobe`.
 
   Converted files go to `/tmp/claude-inline-images`.
