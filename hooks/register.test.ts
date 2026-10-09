@@ -161,3 +161,61 @@ test('draws a pasted image under its prompt', async ($, on) => {
 test('leaves pasted images out when showPastedImages is off', { options: { showPastedImages: false } }, async ($, on) => {
   expect(await pastedImages($, on)).toBeUndefined()
 })
+
+const READ_INPUT = { file_path: '/x/cat.png' }
+
+const readImage = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1]) => {
+  let toolUseId = ''
+  mock.env(on, { TERM_PROGRAM: 'ghostty' })
+  on('process.run', () => ({ value: SIPS }))
+  on('ui.render', () => ({ type: 'engine', ref: 0 }))
+  on('tool.call', { tool: 'Read' }, (_$, e) => {
+    toolUseId = e.tool_use_id
+
+    return { result: { type: 'image', file: { base64: '', type: 'image/png', originalSize: 1 } } }
+  })
+
+  await $.tool.call({ tool: 'Read', ...READ_INPUT })
+
+  const call = { tool_use_id: toolUseId, tool: 'Read', input: READ_INPUT, isRunning: false, isErrored: false, isInterrupted: false }
+  const mountGroup = (isExpanded: boolean) =>
+    $.ui.mount({
+      plugin: 'inline-images',
+      surface: 'terminal',
+      component: 'ToolGroup',
+      requestId: 'group-1',
+      props: { calls: [call], isActive: false, isExpanded },
+      viewport: { columns: 120, rows: 40 },
+    })
+  const mountRow = () =>
+    $.ui.mount({
+      plugin: 'inline-images',
+      surface: 'terminal',
+      component: 'ToolUse',
+      requestId: toolUseId,
+      props: call,
+      viewport: { columns: 120, rows: 40 },
+    })
+
+  return { mountGroup, mountRow }
+}
+
+test('draws an image Claude reads under the folded group of reads', async ($, on) => {
+  const { mountGroup } = await readImage($, on)
+  const image = await (await mountGroup(false)).find({ type: 'Image' })
+
+  expect(image?.props).toEqual(expect.objectContaining({ source: { file: '/x/cat.png', format: 'png' }, columns: 60, rows: 30 }))
+})
+
+test('draws it under the Read row, and not again under the group, once the group is expanded', async ($, on) => {
+  const { mountGroup, mountRow } = await readImage($, on)
+
+  expect(await (await mountGroup(true)).find({ type: 'Image' })).toBeUndefined()
+  expect(await (await mountRow()).find({ type: 'Image' })).toBeDefined()
+})
+
+test('leaves images Claude reads out when showReadImages is off', { options: { showReadImages: false } }, async ($, on) => {
+  const { mountGroup } = await readImage($, on)
+
+  expect(await (await mountGroup(false)).find({ type: 'Image' })).toBeUndefined()
+})
