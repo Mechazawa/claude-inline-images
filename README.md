@@ -6,6 +6,8 @@ It gives Claude a `show_image` tool. When you ask Claude to show you an image, t
 transcript with the kitty graphics protocol. The image does not go into Claude's context. Claude uses `Read`
 when it must look at the image itself.
 
+![Claude Code in Ghostty, showing a JPEG inline with show_image](docs/screenshot.png)
+
 ## Install
 
 At the prompt of a Claude Code session in the terminal, type:
