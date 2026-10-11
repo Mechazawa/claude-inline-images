@@ -1,6 +1,6 @@
 {
   "name": "inline-images",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Gives Claude a show_image tool and shows pasted images and images Claude reads inline in the terminal transcript",
   "author": {
     "name": "Mechazawa"
