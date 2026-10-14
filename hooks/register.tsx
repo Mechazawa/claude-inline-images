@@ -98,7 +98,7 @@ const asPng = async ($: EngineInterface, using: Converter, file: string) => {
 }
 
 const cellBox = (shown: Shown, available: number) => {
-  const wanted = Math.min(shown.columns ?? 80, available, 255)
+  const wanted = Math.min(shown.columns ?? 120, available, 255)
   const rows = Math.round((wanted * shown.height) / shown.width / CELL_ASPECT)
 
   return rows <= MAX_ROWS
@@ -190,7 +190,7 @@ export const register: Register = (on, options) => {
         type: 'object',
         properties: {
           path: { type: 'string', description: 'Absolute or working-directory-relative path of a PNG, JPEG, GIF, WebP, HEIC or TIFF file' },
-          columns: { type: 'integer', minimum: 4, maximum: 255, description: 'Width in terminal columns, 80 by default' },
+          columns: { type: 'integer', minimum: 4, maximum: 255, description: 'Width in terminal columns, 120 by default' },
         },
         required: ['path'],
       },
