@@ -38,7 +38,7 @@ Claude calls `show_image` with these inputs:
 | Input | Description |
 | --- | --- |
 | `path` | Absolute or working-directory-relative path of the image |
-| `columns` | Width in terminal columns, 80 by default |
+| `columns` | Width in terminal columns, 120 by default |
 
 The image keeps its aspect ratio. It is never wider than the transcript and never taller than 40 rows.
 
