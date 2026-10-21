@@ -87,7 +87,7 @@ To turn this off, open `/config` and set `inline-images.showReadImages` to `fals
      `sudo apt install imagemagick`. For HEIC files, also install `libheif-plugin-libde265`.
   3. [ffmpeg](https://ffmpeg.org) with `ffprobe`.
 
-  Converted and copied files go to `$TMPDIR/claude-inline-images` (`/tmp/claude-inline-images` when `TMPDIR` is unset).
+  Converted and copied files go to `$TMPDIR/claude-inline-images` (a private `/tmp/claude-inline-images.XXXXXX` folder when `TMPDIR` is unset).
 
 ## Development
 

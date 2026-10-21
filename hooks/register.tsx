@@ -7,8 +7,23 @@ const TOOL = 'show_image'
 const FULL_NAME = 'mcp__inline-images__show_image'
 // Orca only reads kitty image files from the project or the system temp folder ($TMPDIR, not /tmp) and draws an
 // empty frame for any other path, so every image goes through this folder.
-const tempDir = async ($: EngineInterface) =>
-  `${((await $.env.get('TMPDIR').catch(() => undefined)) ?? '/tmp').replace(/\/+$/, '')}/claude-inline-images`
+let fallbackDir: Promise<string> | undefined
+
+const tempDir = async ($: EngineInterface) => {
+  const tmp = await $.env.get('TMPDIR').catch(() => undefined)
+
+  if (tmp) {
+    return `${tmp.replace(/\/+$/, '')}/claude-inline-images`
+  }
+
+  // Without TMPDIR, another user could take a fixed name in the shared /tmp first, so use a private, unpredictable one.
+  fallbackDir ??= exec($, ['mktemp', '-d', '/tmp/claude-inline-images.XXXXXX']).then(stdout => stdout.trim())
+
+  return fallbackDir.catch(error => {
+    fallbackDir = undefined
+    throw error
+  })
+}
 const MAX_ROWS = 40
 const PASTED_COLUMNS = 40
 const READ_COLUMNS = 60

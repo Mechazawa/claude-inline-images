@@ -2,7 +2,7 @@ import { expect, mock, test, type TestBody } from 'claude-code/testing'
 
 const TOOL = 'mcp__inline-images__show_image'
 // Every image is copied or converted into the temp dir, the only place Orca reads kitty images from.
-const COPY = /^\/tmp\/claude-inline-images\/\d+-\w+\.png$/
+const COPY = /^\/tmp\/claude-inline-images\.abc123\/\d+-\w+\.png$/
 const SIPS = {
   exitCode: 0,
   stdout: '/x/cat.png\n  pixelWidth: 400\n  pixelHeight: 400\n',
@@ -10,6 +10,9 @@ const SIPS = {
   isStdoutTruncated: false,
   isStderrTruncated: false,
 }
+// Every command answers as sips does, except mktemp, which names the private folder used when TMPDIR is unset.
+const MKTEMP = { ...SIPS, stdout: '/tmp/claude-inline-images.abc123\n' }
+const answer = (argv: readonly string[]) => (argv[0] === 'mktemp' ? MKTEMP : SIPS)
 
 // A BMP as sips writes it: `rows` holds each pixel row in file order, as BGR or BGRA bytes.
 const bmp = (height: number, bytesPerPixel: number, rows: number[][]) => {
@@ -27,7 +30,7 @@ const bmp = (height: number, bytesPerPixel: number, rows: number[][]) => {
 const rasterCells = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], pixels: string) => {
   mock.env(on, { TERM_PROGRAM: 'iTerm.app' })
   on('fs.stat', () => ({ value: { kind: 'file', size: 1, mtimeMs: 0, isLink: false, realPath: '/x/cat.png' } }))
-  on('process.run', () => ({ value: SIPS }))
+  on('process.run', (_$, e) => ({ value: answer(e.argv) }))
   on('fs.read', () => ({ value: { base64: pixels } }))
 
   const ran = await $.tool.call({ tool: TOOL, path: 'cat.png', columns: 2 })
@@ -64,7 +67,7 @@ test('leaves transparent pixels in the terminal background', async ($, on) => {
 test('shows a PNG as an Image sized to keep its aspect ratio', async ($, on) => {
   mock.env(on, { TERM_PROGRAM: 'ghostty' })
   on('fs.stat', () => ({ value: { kind: 'file', size: 1, mtimeMs: 0, isLink: false, realPath: '/x/cat.png' } }))
-  on('process.run', () => ({ value: SIPS }))
+  on('process.run', (_$, e) => ({ value: answer(e.argv) }))
 
   const ran = await $.tool.call({ tool: TOOL, path: 'cat.png', columns: 40 })
   expect(JSON.parse(ran.result as string)).toEqual({ file: expect.stringMatching(COPY), width: 400, height: 400, columns: 40 })
@@ -84,7 +87,7 @@ const drawnInOrca = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[
   mock.env(on, { TERM_PROGRAM: 'Orca', ...env })
   on('ui.render', () => ({ type: 'engine', ref: 0 }))
   on('fs.stat', () => ({ value: { kind: 'file', size: 1, mtimeMs: 0, isLink: false, realPath: '/x/cat.png' } }))
-  on('process.run', () => ({ value: SIPS }))
+  on('process.run', (_$, e) => ({ value: answer(e.argv) }))
 
   const ran = await $.tool.call({ tool: TOOL, path: 'cat.png' })
   const ui = await $.ui.mount({
@@ -117,7 +120,7 @@ test('converts a JPEG to PNG before drawing it', async ($, on) => {
   on('process.run', (_$, e) => {
     commands.push([...e.argv])
 
-    return { value: SIPS }
+    return { value: answer(e.argv) }
   })
 
   const ran = await $.tool.call({ tool: TOOL, path: 'cat.jpg' })
@@ -132,7 +135,7 @@ test('copies a PNG into $TMPDIR, where Orca reads it', async ($, on) => {
   on('process.run', (_$, e) => {
     commands.push([...e.argv])
 
-    return { value: SIPS }
+    return { value: answer(e.argv) }
   })
 
   const ran = await $.tool.call({ tool: TOOL, path: 'cat.png' })
@@ -141,32 +144,33 @@ test('copies a PNG into $TMPDIR, where Orca reads it', async ($, on) => {
   expect(commands).toContainEqual(['cp', '/x/cat.png', file])
 })
 
-test('keeps the temp folder owner-only', async ($, on) => {
+test('keeps the temp folder owner-only, private and unpredictable without TMPDIR', async ($, on) => {
   const commands: string[][] = []
   on('fs.stat', () => ({ value: { kind: 'file', size: 1, mtimeMs: 0, isLink: false, realPath: '/x/cat.png' } }))
   on('process.run', (_$, e) => {
     commands.push([...e.argv])
 
-    return { value: SIPS }
+    return { value: answer(e.argv) }
   })
 
   await $.tool.call({ tool: TOOL, path: 'cat.png' })
-  expect(commands).toContainEqual(['mkdir', '-p', '-m', '700', '/tmp/claude-inline-images'])
-  expect(commands).toContainEqual(['chmod', '700', '/tmp/claude-inline-images'])
+  expect(commands).toContainEqual(['mktemp', '-d', '/tmp/claude-inline-images.XXXXXX'])
+  expect(commands).toContainEqual(['mkdir', '-p', '-m', '700', '/tmp/claude-inline-images.abc123'])
+  expect(commands).toContainEqual(['chmod', '700', '/tmp/claude-inline-images.abc123'])
 })
 
 test('converts a JPEG that already sits in the temp folder', async ($, on) => {
   const commands: string[][] = []
-  on('fs.stat', () => ({ value: { kind: 'file', size: 1, mtimeMs: 0, isLink: false, realPath: '/tmp/claude-inline-images/cat.jpg' } }))
+  on('fs.stat', () => ({ value: { kind: 'file', size: 1, mtimeMs: 0, isLink: false, realPath: '/tmp/claude-inline-images.abc123/cat.jpg' } }))
   on('process.run', (_$, e) => {
     commands.push([...e.argv])
 
-    return { value: SIPS }
+    return { value: answer(e.argv) }
   })
 
   const ran = await $.tool.call({ tool: TOOL, path: 'cat.jpg' })
   expect(JSON.parse(ran.result as string).file).toMatch(COPY)
-  expect(commands.some(argv => argv.includes('format') && argv.includes('/tmp/claude-inline-images/cat.jpg'))).toBe(true)
+  expect(commands.some(argv => argv.includes('format') && argv.includes('/tmp/claude-inline-images.abc123/cat.jpg'))).toBe(true)
 })
 
 test('refuses a missing file', async ($, on) => {
@@ -182,19 +186,19 @@ test('falls back to ImageMagick where sips is missing', async ($, on) => {
   on('process.run', (_$, e) => {
     commands.push([...e.argv])
 
-    return { value: { ...SIPS, exitCode: e.argv.at(-1) === 'command -v sips' ? 1 : 0, stdout: 'width=400 height=400' } }
+    return { value: e.argv[0] === 'mktemp' ? MKTEMP : { ...SIPS, exitCode: e.argv.at(-1) === 'command -v sips' ? 1 : 0, stdout: 'width=400 height=400' } }
   })
 
   const ran = await $.tool.call({ tool: TOOL, path: 'cat.jpg' })
   expect(JSON.parse(ran.result as string)).toEqual(expect.objectContaining({ width: 400, height: 400 }))
-  expect(commands.filter(argv => !['sh', 'mkdir', 'chmod'].includes(argv[0] ?? '')).map(argv => argv[0])).toEqual(['magick', 'magick'])
+  expect(commands.filter(argv => !['sh', 'mkdir', 'chmod', 'mktemp'].includes(argv[0] ?? '')).map(argv => argv[0])).toEqual(['magick', 'magick'])
 })
 
 const PROMPT_ROW = 'c68be964-85c5-4f99-896a-6223a68b0693'
 
 const pastedImages = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1]) => {
   mock.env(on, { TERM_PROGRAM: 'ghostty' })
-  on('process.run', () => ({ value: SIPS }))
+  on('process.run', (_$, e) => ({ value: answer(e.argv) }))
   on('ui.render', () => ({ type: 'engine', ref: 0 }))
 
   await $.session.append({
@@ -244,7 +248,7 @@ const READ_INPUT = { file_path: '/x/cat.png' }
 const readImage = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1]) => {
   let toolUseId = ''
   mock.env(on, { TERM_PROGRAM: 'ghostty' })
-  on('process.run', () => ({ value: SIPS }))
+  on('process.run', (_$, e) => ({ value: answer(e.argv) }))
   on('ui.render', () => ({ type: 'engine', ref: 0 }))
   on('tool.call', { tool: 'Read' }, (_$, e) => {
     toolUseId = e.tool_use_id
