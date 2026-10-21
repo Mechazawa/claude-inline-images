@@ -25,6 +25,23 @@ At the prompt of a Claude Code session in the terminal, type:
 
 Answer `y` to add the marketplace, then select a scope. The tool is available from the next prompt.
 
+### In Orca
+
+[Orca](https://github.com/stablyai/orca) 1.4.230 or later draws the images with the kitty graphics protocol, with two
+conditions:
+
+- Claude Code must be told the terminal can draw images. Add this to `~/.claude/settings.json`, then quit and restart
+  the Claude session (`/reload-plugins` is not enough):
+
+  ```json
+  { "env": { "CLAUDE_CODE_FORCE_TERMINAL_IMAGES": "1" } }
+  ```
+
+- Orca only reads image files from the project folder or the system temp folder (`$TMPDIR`). Anywhere else it draws an
+  empty frame. The mod handles this by copying every image into `$TMPDIR/claude-inline-images` before drawing it.
+
+Without the setting, the mod draws nothing in Orca: half blocks are unreadable there.
+
 ## Usage
 
 Ask Claude to show you a file:
@@ -70,7 +87,7 @@ To turn this off, open `/config` and set `inline-images.showReadImages` to `fals
      `sudo apt install imagemagick`. For HEIC files, also install `libheif-plugin-libde265`.
   3. [ffmpeg](https://ffmpeg.org) with `ffprobe`.
 
-  Converted files go to `/tmp/claude-inline-images`.
+  Converted and copied files go to `$TMPDIR/claude-inline-images` (`/tmp/claude-inline-images` when `TMPDIR` is unset).
 
 ## Development
 

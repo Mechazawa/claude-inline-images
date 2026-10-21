@@ -1,6 +1,8 @@
 import { expect, mock, test, type TestBody } from 'claude-code/testing'
 
 const TOOL = 'mcp__inline-images__show_image'
+// Every image is copied or converted into the temp dir, the only place Orca reads kitty images from.
+const COPY = /^\/tmp\/claude-inline-images\/\d+-\w+\.png$/
 const SIPS = {
   exitCode: 0,
   stdout: '/x/cat.png\n  pixelWidth: 400\n  pixelHeight: 400\n',
@@ -65,7 +67,7 @@ test('shows a PNG as an Image sized to keep its aspect ratio', async ($, on) => 
   on('process.run', () => ({ value: SIPS }))
 
   const ran = await $.tool.call({ tool: TOOL, path: 'cat.png', columns: 40 })
-  expect(JSON.parse(ran.result as string)).toEqual({ file: '/x/cat.png', width: 400, height: 400, columns: 40 })
+  expect(JSON.parse(ran.result as string)).toEqual({ file: expect.stringMatching(COPY), width: 400, height: 400, columns: 40 })
 
   const ui = await $.ui.mount({
     plugin: 'inline-images',
@@ -78,6 +80,37 @@ test('shows a PNG as an Image sized to keep its aspect ratio', async ($, on) => 
   expect(image?.props).toEqual(expect.objectContaining({ columns: 40, rows: 20 }))
 })
 
+const drawnInOrca = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], env: Record<string, string>) => {
+  mock.env(on, { TERM_PROGRAM: 'Orca', ...env })
+  on('ui.render', () => ({ type: 'engine', ref: 0 }))
+  on('fs.stat', () => ({ value: { kind: 'file', size: 1, mtimeMs: 0, isLink: false, realPath: '/x/cat.png' } }))
+  on('process.run', () => ({ value: SIPS }))
+
+  const ran = await $.tool.call({ tool: TOOL, path: 'cat.png' })
+  const ui = await $.ui.mount({
+    plugin: 'inline-images',
+    surface: 'terminal',
+    component: 'ToolResult',
+    props: { tool_use_id: 't1', tool: TOOL, output: ran.result, isErrored: false },
+    viewport: { columns: 120, rows: 40 },
+  })
+
+  return { image: await ui.find({ type: 'Image' }), raster: await ui.find({ type: 'Raster' }) }
+}
+
+test('shows an Image in Orca when Claude Code is told to draw images', async ($, on) => {
+  const { image } = await drawnInOrca($, on, { ORCA_IMAGE_PROTOCOL: 'kitty', CLAUDE_CODE_FORCE_TERMINAL_IMAGES: '1' })
+
+  expect(image?.props).toEqual(expect.objectContaining({ source: { file: expect.stringMatching(COPY), format: 'png' } }))
+})
+
+test('draws neither an Image nor half blocks in Orca without the flag', async ($, on) => {
+  const { image, raster } = await drawnInOrca($, on, { ORCA_IMAGE_PROTOCOL: 'kitty' })
+
+  expect(image).toBeUndefined()
+  expect(raster).toBeUndefined()
+})
+
 test('converts a JPEG to PNG before drawing it', async ($, on) => {
   const commands: string[][] = []
   on('fs.stat', () => ({ value: { kind: 'file', size: 1, mtimeMs: 0, isLink: false, realPath: '/x/cat.jpg' } }))
@@ -88,8 +121,24 @@ test('converts a JPEG to PNG before drawing it', async ($, on) => {
   })
 
   const ran = await $.tool.call({ tool: TOOL, path: 'cat.jpg' })
-  expect(JSON.parse(ran.result as string).file).toMatch(/^\/tmp\/claude-inline-images\/\d+\.png$/)
+  expect(JSON.parse(ran.result as string).file).toMatch(COPY)
   expect(commands.some(argv => argv.includes('format') && argv.includes('/x/cat.jpg'))).toBe(true)
+})
+
+test('copies a PNG into $TMPDIR, where Orca reads it', async ($, on) => {
+  const commands: string[][] = []
+  mock.env(on, { TMPDIR: '/var/folders/ab/T/' })
+  on('fs.stat', () => ({ value: { kind: 'file', size: 1, mtimeMs: 0, isLink: false, realPath: '/x/cat.png' } }))
+  on('process.run', (_$, e) => {
+    commands.push([...e.argv])
+
+    return { value: SIPS }
+  })
+
+  const ran = await $.tool.call({ tool: TOOL, path: 'cat.png' })
+  const file = JSON.parse(ran.result as string).file as string
+  expect(file).toMatch(/^\/var\/folders\/ab\/T\/claude-inline-images\/\d+-\w+\.png$/)
+  expect(commands).toContainEqual(['cp', '/x/cat.png', file])
 })
 
 test('refuses a missing file', async ($, on) => {
@@ -155,7 +204,7 @@ const pastedImages = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>
 test('draws a pasted image under its prompt', async ($, on) => {
   const image = await pastedImages($, on)
 
-  expect(image?.props).toEqual(expect.objectContaining({ source: { file: '/x/paste.png', format: 'png' }, columns: 40, rows: 20 }))
+  expect(image?.props).toEqual(expect.objectContaining({ source: { file: expect.stringMatching(COPY), format: 'png' }, columns: 40, rows: 20 }))
 })
 
 test('leaves pasted images out when showPastedImages is off', { options: { showPastedImages: false } }, async ($, on) => {
@@ -204,7 +253,7 @@ test('draws an image Claude reads under the folded group of reads', async ($, on
   const { mountGroup } = await readImage($, on)
   const image = await (await mountGroup(false)).find({ type: 'Image' })
 
-  expect(image?.props).toEqual(expect.objectContaining({ source: { file: '/x/cat.png', format: 'png' }, columns: 60, rows: 30 }))
+  expect(image?.props).toEqual(expect.objectContaining({ source: { file: expect.stringMatching(COPY), format: 'png' }, columns: 60, rows: 30 }))
 })
 
 test('draws it under the Read row, and not again under the group, once the group is expanded', async ($, on) => {
