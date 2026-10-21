@@ -69,8 +69,7 @@ const findConverter = async ($: EngineInterface) => {
 
 let converter: Promise<Converter | undefined> | undefined
 
-const run = async ($: EngineInterface, argv: string[]) => {
-  await $.process.run(['mkdir', '-p', await tempDir($)])
+const exec = async ($: EngineInterface, argv: string[]) => {
   const { exitCode, stdout, stderr } = await $.process.run(argv)
 
   if (exitCode !== 0) {
@@ -78,6 +77,16 @@ const run = async ($: EngineInterface, argv: string[]) => {
   }
 
   return stdout
+}
+
+// Owner-only, so other users cannot read the images in a shared /tmp. chmod fails, and so does the call, when the
+// folder belongs to someone else. Files inside need no mode of their own: nobody else can enter the folder.
+const run = async ($: EngineInterface, argv: string[]) => {
+  const dir = await tempDir($)
+  await exec($, ['mkdir', '-p', '-m', '700', dir])
+  await exec($, ['chmod', '700', dir])
+
+  return exec($, argv)
 }
 
 const pixelSize = async ($: EngineInterface, using: Converter, file: string) => {
@@ -93,7 +102,7 @@ const pixelSize = async ($: EngineInterface, using: Converter, file: string) => 
 const asPng = async ($: EngineInterface, using: Converter, file: string) => {
   const dir = await tempDir($)
 
-  if (file.startsWith(`${dir}/`)) {
+  if (file.startsWith(`${dir}/`) && /\.png$/i.test(file)) {
     return file
   }
 

@@ -141,6 +141,34 @@ test('copies a PNG into $TMPDIR, where Orca reads it', async ($, on) => {
   expect(commands).toContainEqual(['cp', '/x/cat.png', file])
 })
 
+test('keeps the temp folder owner-only', async ($, on) => {
+  const commands: string[][] = []
+  on('fs.stat', () => ({ value: { kind: 'file', size: 1, mtimeMs: 0, isLink: false, realPath: '/x/cat.png' } }))
+  on('process.run', (_$, e) => {
+    commands.push([...e.argv])
+
+    return { value: SIPS }
+  })
+
+  await $.tool.call({ tool: TOOL, path: 'cat.png' })
+  expect(commands).toContainEqual(['mkdir', '-p', '-m', '700', '/tmp/claude-inline-images'])
+  expect(commands).toContainEqual(['chmod', '700', '/tmp/claude-inline-images'])
+})
+
+test('converts a JPEG that already sits in the temp folder', async ($, on) => {
+  const commands: string[][] = []
+  on('fs.stat', () => ({ value: { kind: 'file', size: 1, mtimeMs: 0, isLink: false, realPath: '/tmp/claude-inline-images/cat.jpg' } }))
+  on('process.run', (_$, e) => {
+    commands.push([...e.argv])
+
+    return { value: SIPS }
+  })
+
+  const ran = await $.tool.call({ tool: TOOL, path: 'cat.jpg' })
+  expect(JSON.parse(ran.result as string).file).toMatch(COPY)
+  expect(commands.some(argv => argv.includes('format') && argv.includes('/tmp/claude-inline-images/cat.jpg'))).toBe(true)
+})
+
 test('refuses a missing file', async ($, on) => {
   on('fs.stat', () => ({ deny: 'ENOENT' }))
 
@@ -159,7 +187,7 @@ test('falls back to ImageMagick where sips is missing', async ($, on) => {
 
   const ran = await $.tool.call({ tool: TOOL, path: 'cat.jpg' })
   expect(JSON.parse(ran.result as string)).toEqual(expect.objectContaining({ width: 400, height: 400 }))
-  expect(commands.filter(argv => argv[0] !== 'sh' && argv[0] !== 'mkdir').map(argv => argv[0])).toEqual(['magick', 'magick'])
+  expect(commands.filter(argv => !['sh', 'mkdir', 'chmod'].includes(argv[0] ?? '')).map(argv => argv[0])).toEqual(['magick', 'magick'])
 })
 
 const PROMPT_ROW = 'c68be964-85c5-4f99-896a-6223a68b0693'
