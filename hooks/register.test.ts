@@ -98,23 +98,23 @@ test('converts a JPEG to PNG before drawing it', async ($, on) => {
   expect(commands.some(argv => argv.includes('format') && argv.includes('/x/cat.jpg'))).toBe(true)
 })
 
-const copyButton = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], exitCodes: Record<string, number>) => {
-  const clipboards: string[] = []
-  const copiedFiles: (string | undefined)[] = []
+const buttons = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], exitCodes: Record<string, number>) => {
+  const tools: string[] = []
+  const files: (string | undefined)[] = []
   const toasts: string[] = []
   mock.env(on, { TERM_PROGRAM: 'ghostty' })
   on('fs.stat', () => ({ value: { kind: 'file', size: 1, mtimeMs: 0, isLink: false, realPath: '/x/cat.png' } }))
   on('process.run', (_$, e) => {
-    const clipboard = e.argv[0] === 'osascript' ? 'osascript' : /^(wl-copy|xclip)/.exec(e.argv[2] ?? '')?.[1]
+    const tool = ['osascript', 'open'].includes(e.argv[0] ?? '') ? e.argv[0] : /(wl-copy|xclip|xdg-open)/.exec(e.argv[2] ?? '')?.[1]
 
-    if (clipboard === undefined) {
+    if (tool === undefined) {
       return { value: SIPS }
     }
 
-    clipboards.push(clipboard)
-    copiedFiles.push(e.argv.at(-1))
+    tools.push(tool)
+    files.push(e.argv.at(-1))
 
-    return { value: { ...SIPS, exitCode: exitCodes[clipboard] ?? 0 } }
+    return { value: { ...SIPS, exitCode: exitCodes[tool] ?? 0 } }
   })
   on('ui.toast', (_$, e) => {
     toasts.push(e.text)
@@ -132,7 +132,7 @@ const copyButton = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1
     viewport: { columns: 120, rows: 40 },
   })
 
-  return { ui, clipboards, copiedFiles, toasts }
+  return { ui, tools, files, toasts }
 }
 
 const CLIPBOARD_CASES: [string, Record<string, number>, string[], string][] = [
@@ -143,20 +143,50 @@ const CLIPBOARD_CASES: [string, Record<string, number>, string[], string][] = [
 
 CLIPBOARD_CASES.forEach(([name, exitCodes, tried, toast]) => {
   test(`copies the image from its copy button with the first clipboard tool that works: ${name}`, async ($, on) => {
-    const { ui, clipboards, copiedFiles, toasts } = await copyButton($, on, exitCodes)
+    const { ui, tools, files, toasts } = await buttons($, on, exitCodes)
     await ui.press({ key: 'copy-t1' })
 
-    expect(clipboards).toEqual(tried)
-    expect(copiedFiles).toEqual(tried.map(() => '/x/cat.png'))
+    expect(tools).toEqual(tried)
+    expect(files).toEqual(tried.map(() => '/x/cat.png'))
     expect(toasts).toEqual([toast])
   })
 })
 
+const VIEWER_CASES: [string, Record<string, number>, string[], string[]][] = [
+  ['xdg-open', {}, ['xdg-open'], []],
+  ['open where xdg-open is missing', { 'xdg-open': 1 }, ['xdg-open', 'open'], []],
+  ['no viewer', { 'xdg-open': 1, open: 1 }, ['xdg-open', 'open'], ['Could not open the image']],
+]
+
+VIEWER_CASES.forEach(([name, exitCodes, tried, toast]) => {
+  test(`opens the image from its open button with the first viewer that works: ${name}`, async ($, on) => {
+    const { ui, tools, files, toasts } = await buttons($, on, exitCodes)
+    await ui.press({ key: 'open-t1' })
+
+    expect(tools).toEqual(tried)
+    expect(files).toEqual(tried.map(() => '/x/cat.png'))
+    expect(toasts).toEqual(toast)
+  })
+})
+
 test('leaves the copy button out when showCopyButton is off', { options: { showCopyButton: false } }, async ($, on) => {
-  const { ui } = await copyButton($, on, {})
+  const { ui } = await buttons($, on, {})
+
+  expect(await ui.find({ key: 'copy-t1' })).toBeUndefined()
+  expect(await ui.find({ key: 'open-t1' })).toBeDefined()
+})
+
+test('leaves both buttons out when both are off', { options: { showCopyButton: false, showOpenButton: false } }, async ($, on) => {
+  const { ui } = await buttons($, on, {})
 
   expect(await ui.find({ type: 'Button' })).toBeUndefined()
   expect(await ui.find({ type: 'Image' })).toBeDefined()
+})
+
+test('draws show_image at the defaultColumns width when Claude gives none', { options: { defaultColumns: 60 } }, async ($, on) => {
+  const { ui } = await buttons($, on, {})
+
+  expect((await ui.find({ type: 'Image' }))?.props).toEqual(expect.objectContaining({ columns: 60, rows: 30 }))
 })
 
 test('refuses a missing file', async ($, on) => {

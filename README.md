@@ -42,6 +42,8 @@ Claude calls `show_image` with these inputs:
 
 The image keeps its aspect ratio. It is never wider than the transcript and never taller than 40 rows.
 
+To change the default width, open `/config` and set `inline-images.defaultColumns`.
+
 ### Pasted images
 
 When you paste an image into the prompt, the mod draws it 40 columns wide under your message. Images pasted
@@ -64,6 +66,14 @@ into another app. The mod copies with `osascript` on macOS, and with `wl-copy` o
 machine where Claude Code runs, so in a session over SSH the image goes to that machine's clipboard.
 
 To turn this off, open `/config` and set `inline-images.showCopyButton` to `false`.
+
+### Opening an image
+
+Next to `[ copy ]` is an `[ open ]` button. Press it to open the image in your default image viewer, for example
+Preview on macOS. The mod uses `xdg-open` on Linux and `open` on macOS. Like the copy button, it runs on the machine
+where Claude Code runs.
+
+To turn this off, open `/config` and set `inline-images.showOpenButton` to `false`.
 
 ## Requirements
 
