@@ -141,6 +141,19 @@ const rasterCells = async ($: EngineInterface, using: Converter, file: string, c
   return new Uint8Array(Uint32Array.from(words).buffer).toBase64()
 }
 
+// wl-copy and xclip leave a child holding the clipboard, so its output goes to /dev/null, or the run waits for it.
+const CLIPBOARDS = [
+  ['osascript', '-e', 'on run argv', '-e', 'set the clipboard to (read (POSIX file (item 1 of argv)) as «class PNGf»)', '-e', 'end run'],
+  ['sh', '-c', 'wl-copy --type image/png < "$1" > /dev/null 2>&1', 'sh'],
+  ['sh', '-c', 'xclip -selection clipboard -t image/png -i "$1" > /dev/null 2>&1', 'sh'],
+]
+
+const copyImage = ($: EngineInterface, file: string) =>
+  CLIPBOARDS.reduce(
+    async (copied, argv) => (await copied) || (await $.process.run([...argv, file]).catch(() => undefined))?.exitCode === 0,
+    Promise.resolve(false),
+  )
+
 const rasters = new Map<string, Promise<string>>()
 
 const describe = async ($: EngineInterface, using: Converter, path: string, columns?: number): Promise<Shown> => {
@@ -154,11 +167,28 @@ const describe = async ($: EngineInterface, using: Converter, path: string, colu
   return { file, ...size, columns }
 }
 
-const picture = async ($: EngineInterface, { Image, Raster }: Elements['terminal'], shown: Shown, available: number, key: string) => {
+const picture = async (
+  $: EngineInterface,
+  { Box, Button, Image, Raster }: Elements['terminal'],
+  shown: Shown,
+  available: number,
+  key: string,
+  isCopyable: boolean,
+) => {
   const box = cellBox(shown, available)
+  const copy = async () => $.ui.toast((await copyImage($, shown.file)) ? 'Copied the image' : 'Could not copy the image')
+  const withCopyButton = (drawn: JSX.Element) =>
+    isCopyable ? (
+      <Box flexDirection="column">
+        {drawn}
+        <Button key={`copy-${key}`} label="copy" dimColor onPress={copy} />
+      </Box>
+    ) : (
+      drawn
+    )
 
   if ((await $.env.get('TERM_PROGRAM')) === 'ghostty' || (await $.env.get('TERM')) === 'xterm-kitty') {
-    return <Image source={{ file: shown.file, format: 'png' }} {...box} alt={shown.file} />
+    return withCopyButton(<Image source={{ file: shown.file, format: 'png' }} {...box} alt={shown.file} />)
   }
 
   const using = await (converter ??= findConverter($))
@@ -171,7 +201,7 @@ const picture = async ($: EngineInterface, { Image, Raster }: Elements['terminal
   const cells = rasters.get(cacheKey) ?? rasterCells($, using, shown.file, box.columns, box.rows)
   rasters.set(cacheKey, cells)
 
-  return <Raster key={key} {...box} cells={await cells} />
+  return withCopyButton(<Raster key={key} {...box} cells={await cells} />)
 }
 
 const pasted = atom({ plugin: 'inline-images', key: 'pasted' } as const, {})
@@ -183,6 +213,8 @@ const rowKey = (id: string) => id.slice(0, 23)
 
 
 export const register: Register = (on, options) => {
+  const isCopyable = options.showCopyButton !== false
+
   on('session.start', async ($, e, next) => {
     await $.tool.register({
       name: TOOL,
@@ -234,7 +266,7 @@ export const register: Register = (on, options) => {
       return next(e)
     }
 
-    return (await picture($, $.ui.resolve(e), shown, (e.viewport?.columns ?? 80) - 6, e.requestId)) ?? next(e)
+    return (await picture($, $.ui.resolve(e), shown, (e.viewport?.columns ?? 80) - 6, e.requestId, isCopyable)) ?? next(e)
   })
 
   if (options.showReadImages !== false) {
@@ -267,7 +299,7 @@ export const register: Register = (on, options) => {
       return (
         <elements.Box flexDirection="column">
           {await next(e)}
-          {await picture($, elements, shown, (e.viewport?.columns ?? 80) - 6, e.requestId)}
+          {await picture($, elements, shown, (e.viewport?.columns ?? 80) - 6, e.requestId, isCopyable)}
         </elements.Box>
       )
     })
@@ -283,7 +315,7 @@ export const register: Register = (on, options) => {
 
       const elements = $.ui.resolve(e)
       const available = (e.viewport?.columns ?? 80) - 6
-      const pictures = await Promise.all(shown.map((one, index) => picture($, elements, one, available, `${e.requestId}-${index}`)))
+      const pictures = await Promise.all(shown.map((one, index) => picture($, elements, one, available, `${e.requestId}-${index}`, isCopyable)))
 
       return (
         <elements.Box flexDirection="column">
@@ -338,7 +370,7 @@ export const register: Register = (on, options) => {
 
     const elements = $.ui.resolve(e)
     const available = (e.viewport?.columns ?? 80) - 6
-    const pictures = await Promise.all(shown.map((one, index) => picture($, elements, one, available, `${e.requestId}-${index}`)))
+    const pictures = await Promise.all(shown.map((one, index) => picture($, elements, one, available, `${e.requestId}-${index}`, isCopyable)))
 
     return (
       <elements.Box flexDirection="column">

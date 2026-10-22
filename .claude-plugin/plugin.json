@@ -20,6 +20,12 @@
       "title": "Show images Claude reads",
       "description": "Draw the images Claude opens with Read inline in the transcript",
       "default": true
+    },
+    "showCopyButton": {
+      "type": "boolean",
+      "title": "Show a copy button",
+      "description": "Draw a button under each image that copies the image to the clipboard",
+      "default": true
     }
   }
 }
