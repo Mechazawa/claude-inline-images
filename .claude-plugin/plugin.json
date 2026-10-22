@@ -20,6 +20,24 @@
       "title": "Show images Claude reads",
       "description": "Draw the images Claude opens with Read inline in the transcript",
       "default": true
+    },
+    "showCopyButton": {
+      "type": "boolean",
+      "title": "Show a copy button",
+      "description": "Draw a button under each image that copies the image to the clipboard",
+      "default": true
+    },
+    "showOpenButton": {
+      "type": "boolean",
+      "title": "Show an open button",
+      "description": "Draw a button under each image that opens the image in the default image viewer",
+      "default": true
+    },
+    "defaultColumns": {
+      "type": "number",
+      "title": "Default width of show_image",
+      "description": "Width in terminal columns of an image show_image draws when Claude gives no width",
+      "default": 120
     }
   }
 }

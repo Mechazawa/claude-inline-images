@@ -55,9 +55,11 @@ Claude calls `show_image` with these inputs:
 | Input | Description |
 | --- | --- |
 | `path` | Absolute or working-directory-relative path of the image |
-| `columns` | Width in terminal columns, 80 by default |
+| `columns` | Width in terminal columns, 120 by default |
 
 The image keeps its aspect ratio. It is never wider than the transcript and never taller than 40 rows.
+
+To change the default width, open `/config` and set `inline-images.defaultColumns`.
 
 ### Pasted images
 
@@ -73,6 +75,22 @@ wide under the Read line in the transcript. Reads are usually folded into one li
 go under that line. Images read before the mod was loaded are not drawn.
 
 To turn this off, open `/config` and set `inline-images.showReadImages` to `false`.
+
+### Copying an image
+
+Every image the mod draws has a `[ copy ]` button under it. Press it to put the image on the clipboard, then paste it
+into another app. The mod copies with `osascript` on macOS, and with `wl-copy` or `xclip` on Linux. These run on the
+machine where Claude Code runs, so in a session over SSH the image goes to that machine's clipboard.
+
+To turn this off, open `/config` and set `inline-images.showCopyButton` to `false`.
+
+### Opening an image
+
+Next to `[ copy ]` is an `[ open ]` button. Press it to open the image in your default image viewer, for example
+Preview on macOS. The mod uses `xdg-open` on Linux and `open` on macOS. Like the copy button, it runs on the machine
+where Claude Code runs.
+
+To turn this off, open `/config` and set `inline-images.showOpenButton` to `false`.
 
 ## Requirements
 

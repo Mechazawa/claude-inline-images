@@ -128,7 +128,7 @@ const asPng = async ($: EngineInterface, using: Converter, file: string) => {
 }
 
 const cellBox = (shown: Shown, available: number) => {
-  const wanted = Math.min(shown.columns ?? 80, available, 255)
+  const wanted = Math.min(shown.columns, available, 255)
   const rows = Math.round((wanted * shown.height) / shown.width / CELL_ASPECT)
 
   return rows <= MAX_ROWS
@@ -170,9 +170,32 @@ const rasterCells = async ($: EngineInterface, using: Converter, file: string, c
   return new Uint8Array(Uint32Array.from(words).buffer).toBase64()
 }
 
+// wl-copy and xclip leave a child holding the clipboard, so its output goes to /dev/null, or the run waits for it.
+const CLIPBOARDS = [
+  ['osascript', '-e', 'on run argv', '-e', 'set the clipboard to (read (POSIX file (item 1 of argv)) as «class PNGf»)', '-e', 'end run'],
+  ['sh', '-c', 'wl-copy --type image/png < "$1" > /dev/null 2>&1', 'sh'],
+  ['sh', '-c', 'xclip -selection clipboard -t image/png -i "$1" > /dev/null 2>&1', 'sh'],
+]
+
+// xdg-open goes first because Debian's kbd package installs openvt as `open`. It can wait until the viewer it starts is closed, so it
+// runs in the background once it is found.
+const VIEWERS = [['sh', '-c', 'command -v xdg-open > /dev/null && { xdg-open "$1" > /dev/null 2>&1 & }', 'sh'], ['open']]
+
+const runFirst = async ($: EngineInterface, commands: string[][], file: string) => {
+  for (const argv of commands) {
+    if ((await $.process.run([...argv, file]).catch(() => undefined))?.exitCode === 0) {
+      return true
+    }
+  }
+
+  return false
+}
+
+type Buttons = { isCopyable: boolean; isOpenable: boolean }
+
 const rasters = new Map<string, Promise<string>>()
 
-const describe = async ($: EngineInterface, using: Converter, path: string, columns?: number): Promise<Shown> => {
+const describe = async ($: EngineInterface, using: Converter, path: string, columns: number): Promise<Shown> => {
   const file = await asPng($, using, path)
   const size = await pixelSize($, using, file)
 
@@ -183,14 +206,35 @@ const describe = async ($: EngineInterface, using: Converter, path: string, colu
   return { file, ...size, columns }
 }
 
-const picture = async ($: EngineInterface, { Image, Raster }: Elements['terminal'], shown: Shown, available: number, key: string) => {
+const picture = async (
+  $: EngineInterface,
+  { Box, Button, Image, Raster }: Elements['terminal'],
+  shown: Shown,
+  available: number,
+  key: string,
+  buttons: Buttons,
+) => {
   const box = cellBox(shown, available)
+  const copy = async () => $.ui.toast((await runFirst($, CLIPBOARDS, shown.file)) ? 'Copied the image' : 'Could not copy the image')
+  const open = async () => (await runFirst($, VIEWERS, shown.file)) || $.ui.toast('Could not open the image')
+  const withButtons = (drawn: JSX.Element) =>
+    buttons.isCopyable || buttons.isOpenable ? (
+      <Box flexDirection="column">
+        {drawn}
+        <Box flexDirection="row" columnGap={1}>
+          {buttons.isCopyable && <Button key={`copy-${key}`} label="copy" dimColor onPress={copy} />}
+          {buttons.isOpenable && <Button key={`open-${key}`} label="open" dimColor onPress={open} />}
+        </Box>
+      </Box>
+    ) : (
+      drawn
+    )
 
   // Orca speaks the kitty protocol (ORCA_IMAGE_PROTOCOL=kitty), but Claude Code only draws an Image there when
   // CLAUDE_CODE_FORCE_TERMINAL_IMAGES=1; without it, only the alt text shows.
   if ((await $.env.get('TERM_PROGRAM')) === 'ghostty' || (await $.env.get('TERM')) === 'xterm-kitty' ||
       ((await $.env.get('ORCA_IMAGE_PROTOCOL')) === 'kitty' && (await $.env.get('CLAUDE_CODE_FORCE_TERMINAL_IMAGES')) === '1')) {
-    return <Image source={{ file: shown.file, format: 'png' }} {...box} alt={shown.file} />
+    return withButtons(<Image source={{ file: shown.file, format: 'png' }} {...box} alt={shown.file} />)
   }
 
   // Half blocks are unreadable in Orca, so without the flag nothing is drawn there.
@@ -208,7 +252,7 @@ const picture = async ($: EngineInterface, { Image, Raster }: Elements['terminal
   const cells = rasters.get(cacheKey) ?? rasterCells($, using, shown.file, box.columns, box.rows)
   rasters.set(cacheKey, cells)
 
-  return <Raster key={key} {...box} cells={await cells} />
+  return withButtons(<Raster key={key} {...box} cells={await cells} />)
 }
 
 const pasted = atom({ plugin: 'inline-images', key: 'pasted' } as const, {})
@@ -220,6 +264,9 @@ const rowKey = (id: string) => id.slice(0, 23)
 
 
 export const register: Register = (on, options) => {
+  const buttons = { isCopyable: options.showCopyButton !== false, isOpenable: options.showOpenButton !== false }
+  const defaultColumns = typeof options.defaultColumns === 'number' ? options.defaultColumns : 120
+
   on('session.start', async ($, e, next) => {
     await $.tool.register({
       name: TOOL,
@@ -230,7 +277,7 @@ export const register: Register = (on, options) => {
         type: 'object',
         properties: {
           path: { type: 'string', description: 'Absolute or working-directory-relative path of a PNG, JPEG, GIF, WebP, HEIC or TIFF file' },
-          columns: { type: 'integer', minimum: 4, maximum: 255, description: 'Width in terminal columns, 80 by default' },
+          columns: { type: 'integer', minimum: 4, maximum: 255, description: `Width in terminal columns, ${defaultColumns} by default` },
         },
         required: ['path'],
       },
@@ -259,19 +306,21 @@ export const register: Register = (on, options) => {
       return { deny: 'show_image needs sips (macOS), ImageMagick or ffmpeg to read images' }
     }
 
-    const shown = await describe($, using, real, typeof input.columns === 'number' ? input.columns : undefined)
+    const shown = await describe($, using, real, typeof input.columns === 'number' ? input.columns : defaultColumns)
 
     return { result: JSON.stringify(shown) }
   }).catch(($, e, next) => ({ deny: `show_image failed: ${next.error.message ?? next.error.kind}` }))
 
   on('ui.render', { component: 'ToolResult', props: { tool: FULL_NAME } }, async ($, e, next) => {
-    const shown = typeof e.props.output === 'string' ? (JSON.parse(e.props.output) as Shown) : undefined
+    // A stored result can lack columns.
+    const stored = typeof e.props.output === 'string' ? (JSON.parse(e.props.output) as Partial<Shown> & Omit<Shown, 'columns'>) : undefined
+    const shown = stored && { columns: defaultColumns, ...stored }
 
     if (e.surface !== 'terminal' || e.props.isErrored || shown === undefined) {
       return next(e)
     }
 
-    return (await picture($, $.ui.resolve(e), shown, (e.viewport?.columns ?? 80) - 6, e.requestId)) ?? next(e)
+    return (await picture($, $.ui.resolve(e), shown, (e.viewport?.columns ?? 80) - 6, e.requestId, buttons)) ?? next(e)
   })
 
   if (options.showReadImages !== false) {
@@ -304,7 +353,7 @@ export const register: Register = (on, options) => {
       return (
         <elements.Box flexDirection="column">
           {await next(e)}
-          {await picture($, elements, shown, (e.viewport?.columns ?? 80) - 6, e.requestId)}
+          {await picture($, elements, shown, (e.viewport?.columns ?? 80) - 6, e.requestId, buttons)}
         </elements.Box>
       )
     })
@@ -320,7 +369,7 @@ export const register: Register = (on, options) => {
 
       const elements = $.ui.resolve(e)
       const available = (e.viewport?.columns ?? 80) - 6
-      const pictures = await Promise.all(shown.map((one, index) => picture($, elements, one, available, `${e.requestId}-${index}`)))
+      const pictures = await Promise.all(shown.map((one, index) => picture($, elements, one, available, `${e.requestId}-${index}`, buttons)))
 
       return (
         <elements.Box flexDirection="column">
@@ -375,7 +424,7 @@ export const register: Register = (on, options) => {
 
     const elements = $.ui.resolve(e)
     const available = (e.viewport?.columns ?? 80) - 6
-    const pictures = await Promise.all(shown.map((one, index) => picture($, elements, one, available, `${e.requestId}-${index}`)))
+    const pictures = await Promise.all(shown.map((one, index) => picture($, elements, one, available, `${e.requestId}-${index}`, buttons)))
 
     return (
       <elements.Box flexDirection="column">

@@ -43,7 +43,7 @@ const rasterCells = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[
   })
   const raster = await ui.find({ type: 'Raster' })
 
-  return Array.from(new Uint32Array(Uint8Array.fromBase64(raster?.props.cells as string).buffer))
+  return { ui, cells: Array.from(new Uint32Array(Uint8Array.fromBase64(raster?.props.cells as string).buffer)) }
 }
 
 test('draws half blocks where the terminal has no kitty graphics', async ($, on) => {
@@ -51,7 +51,7 @@ test('draws half blocks where the terminal has no kitty graphics', async ($, on)
   const white = [255, 255, 255]
   const red = [0, 0, 255]
   const green = [0, 255, 0]
-  const cells = await rasterCells($, on, bmp(2, 3, [[...blue, ...white], [...red, ...green]]))
+  const { cells } = await rasterCells($, on, bmp(2, 3, [[...blue, ...white], [...red, ...green]]))
 
   expect(cells).toEqual([0x2580, 0xff0000, 0x0000ff, 0x2580, 0x00ff00, 0xffffff])
 })
@@ -59,9 +59,15 @@ test('draws half blocks where the terminal has no kitty graphics', async ($, on)
 test('leaves transparent pixels in the terminal background', async ($, on) => {
   const clear = [0, 0, 0, 0]
   const red = [0, 0, 255, 255]
-  const cells = await rasterCells($, on, bmp(-2, 4, [[...clear, ...clear], [...red, ...clear]]))
+  const { cells } = await rasterCells($, on, bmp(-2, 4, [[...clear, ...clear], [...red, ...clear]]))
 
   expect(cells).toEqual([0x2584, 0xff0000, 0x01000000, 0x20, 0x01000000, 0x01000000])
+})
+
+test('draws the copy button under half blocks', async ($, on) => {
+  const { ui } = await rasterCells($, on, bmp(1, 3, [[0, 0, 0, 0, 0, 0]]))
+
+  expect(await ui.find({ type: 'Button' })).toBeDefined()
 })
 
 test('shows a PNG as an Image sized to keep its aspect ratio', async ($, on) => {
@@ -173,6 +179,97 @@ test('converts a JPEG that already sits in the temp folder', async ($, on) => {
   expect(commands.some(argv => argv.includes('format') && argv.includes('/tmp/claude-inline-images.abc123/cat.jpg'))).toBe(true)
 })
 
+const buttons = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], exitCodes: Record<string, number>) => {
+  const tools: string[] = []
+  const files: (string | undefined)[] = []
+  const toasts: string[] = []
+  mock.env(on, { TERM_PROGRAM: 'ghostty' })
+  on('fs.stat', () => ({ value: { kind: 'file', size: 1, mtimeMs: 0, isLink: false, realPath: '/x/cat.png' } }))
+  on('process.run', (_$, e) => {
+    const tool = ['osascript', 'open'].includes(e.argv[0] ?? '') ? e.argv[0] : /(wl-copy|xclip|xdg-open)/.exec(e.argv[2] ?? '')?.[1]
+
+    if (tool === undefined) {
+      return { value: answer(e.argv) }
+    }
+
+    tools.push(tool)
+    files.push(e.argv.at(-1))
+
+    return { value: { ...SIPS, exitCode: exitCodes[tool] ?? 0 } }
+  })
+  on('ui.toast', (_$, e) => {
+    toasts.push(e.text)
+
+    return { value: undefined }
+  })
+
+  const ran = await $.tool.call({ tool: TOOL, path: 'cat.png' })
+  const ui = await $.ui.mount({
+    plugin: 'inline-images',
+    surface: 'terminal',
+    component: 'ToolResult',
+    requestId: 't1',
+    props: { tool_use_id: 't1', tool: TOOL, output: ran.result, isErrored: false },
+    viewport: { columns: 120, rows: 40 },
+  })
+
+  return { ui, tools, files, toasts }
+}
+
+const CLIPBOARD_CASES: [string, Record<string, number>, string[], string][] = [
+  ['osascript', {}, ['osascript'], 'Copied the image'],
+  ['wl-copy after osascript fails', { osascript: 127 }, ['osascript', 'wl-copy'], 'Copied the image'],
+  ['no tool', { osascript: 127, 'wl-copy': 1, xclip: 127 }, ['osascript', 'wl-copy', 'xclip'], 'Could not copy the image'],
+]
+
+CLIPBOARD_CASES.forEach(([name, exitCodes, tried, toast]) => {
+  test(`copies the image from its copy button with the first clipboard tool that works: ${name}`, async ($, on) => {
+    const { ui, tools, files, toasts } = await buttons($, on, exitCodes)
+    await ui.press({ key: 'copy-t1' })
+
+    expect(tools).toEqual(tried)
+    expect(files).toEqual(tried.map(() => expect.stringMatching(COPY)))
+    expect(toasts).toEqual([toast])
+  })
+})
+
+const VIEWER_CASES: [string, Record<string, number>, string[], string[]][] = [
+  ['xdg-open', {}, ['xdg-open'], []],
+  ['open where xdg-open is missing', { 'xdg-open': 1 }, ['xdg-open', 'open'], []],
+  ['no viewer', { 'xdg-open': 1, open: 1 }, ['xdg-open', 'open'], ['Could not open the image']],
+]
+
+VIEWER_CASES.forEach(([name, exitCodes, tried, toast]) => {
+  test(`opens the image from its open button with the first viewer that works: ${name}`, async ($, on) => {
+    const { ui, tools, files, toasts } = await buttons($, on, exitCodes)
+    await ui.press({ key: 'open-t1' })
+
+    expect(tools).toEqual(tried)
+    expect(files).toEqual(tried.map(() => expect.stringMatching(COPY)))
+    expect(toasts).toEqual(toast)
+  })
+})
+
+test('leaves the copy button out when showCopyButton is off', { options: { showCopyButton: false } }, async ($, on) => {
+  const { ui } = await buttons($, on, {})
+
+  expect(await ui.find({ key: 'copy-t1' })).toBeUndefined()
+  expect(await ui.find({ key: 'open-t1' })).toBeDefined()
+})
+
+test('leaves both buttons out when both are off', { options: { showCopyButton: false, showOpenButton: false } }, async ($, on) => {
+  const { ui } = await buttons($, on, {})
+
+  expect(await ui.find({ type: 'Button' })).toBeUndefined()
+  expect(await ui.find({ type: 'Image' })).toBeDefined()
+})
+
+test('draws show_image at the defaultColumns width when Claude gives none', { options: { defaultColumns: 60 } }, async ($, on) => {
+  const { ui } = await buttons($, on, {})
+
+  expect((await ui.find({ type: 'Image' }))?.props).toEqual(expect.objectContaining({ columns: 60, rows: 30 }))
+})
+
 test('refuses a missing file', async ($, on) => {
   on('fs.stat', () => ({ deny: 'ENOENT' }))
 
@@ -230,17 +327,20 @@ const pastedImages = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>
     viewport: { columns: 120, rows: 40 },
   })
 
-  return ui.find({ type: 'Image' })
+  return ui
 }
 
-test('draws a pasted image under its prompt', async ($, on) => {
-  const image = await pastedImages($, on)
+test('draws a pasted image under its prompt, with a copy button', async ($, on) => {
+  const ui = await pastedImages($, on)
 
-  expect(image?.props).toEqual(expect.objectContaining({ source: { file: expect.stringMatching(COPY), format: 'png' }, columns: 40, rows: 20 }))
+  expect((await ui.find({ type: 'Image' }))?.props).toEqual(
+    expect.objectContaining({ source: { file: expect.stringMatching(COPY), format: 'png' }, columns: 40, rows: 20 }),
+  )
+  expect(await ui.find({ type: 'Button' })).toBeDefined()
 })
 
 test('leaves pasted images out when showPastedImages is off', { options: { showPastedImages: false } }, async ($, on) => {
-  expect(await pastedImages($, on)).toBeUndefined()
+  expect(await (await pastedImages($, on)).find({ type: 'Image' })).toBeUndefined()
 })
 
 const READ_INPUT = { file_path: '/x/cat.png' }
@@ -281,11 +381,14 @@ const readImage = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1]
   return { mountGroup, mountRow }
 }
 
-test('draws an image Claude reads under the folded group of reads', async ($, on) => {
+test('draws an image Claude reads under the folded group of reads, with a copy button', async ($, on) => {
   const { mountGroup } = await readImage($, on)
-  const image = await (await mountGroup(false)).find({ type: 'Image' })
+  const ui = await mountGroup(false)
 
-  expect(image?.props).toEqual(expect.objectContaining({ source: { file: expect.stringMatching(COPY), format: 'png' }, columns: 60, rows: 30 }))
+  expect((await ui.find({ type: 'Image' }))?.props).toEqual(
+    expect.objectContaining({ source: { file: expect.stringMatching(COPY), format: 'png' }, columns: 60, rows: 30 }),
+  )
+  expect(await ui.find({ type: 'Button' })).toBeDefined()
 })
 
 test('draws it under the Read row, and not again under the group, once the group is expanded', async ($, on) => {
