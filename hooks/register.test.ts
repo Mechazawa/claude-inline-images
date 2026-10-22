@@ -92,6 +92,64 @@ test('converts a JPEG to PNG before drawing it', async ($, on) => {
   expect(commands.some(argv => argv.includes('format') && argv.includes('/x/cat.jpg'))).toBe(true)
 })
 
+const copyButton = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], exitCodes: Record<string, number>) => {
+  const clipboards: string[] = []
+  const toasts: string[] = []
+  mock.env(on, { TERM_PROGRAM: 'ghostty' })
+  on('fs.stat', () => ({ value: { kind: 'file', size: 1, mtimeMs: 0, isLink: false, realPath: '/x/cat.png' } }))
+  on('process.run', (_$, e) => {
+    const clipboard = e.argv[0] === 'osascript' ? 'osascript' : /^(wl-copy|xclip)/.exec(e.argv[2] ?? '')?.[1]
+
+    if (clipboard === undefined) {
+      return { value: SIPS }
+    }
+
+    clipboards.push(clipboard)
+
+    return { value: { ...SIPS, exitCode: exitCodes[clipboard] ?? 0 } }
+  })
+  on('ui.toast', (_$, e) => {
+    toasts.push(e.text)
+
+    return { value: undefined }
+  })
+
+  const ran = await $.tool.call({ tool: TOOL, path: 'cat.png' })
+  const ui = await $.ui.mount({
+    plugin: 'inline-images',
+    surface: 'terminal',
+    component: 'ToolResult',
+    requestId: 't1',
+    props: { tool_use_id: 't1', tool: TOOL, output: ran.result, isErrored: false },
+    viewport: { columns: 120, rows: 40 },
+  })
+
+  return { ui, clipboards, toasts }
+}
+
+const CLIPBOARD_CASES: [string, Record<string, number>, string[], string][] = [
+  ['osascript', {}, ['osascript'], 'Copied the image'],
+  ['wl-copy after osascript fails', { osascript: 127 }, ['osascript', 'wl-copy'], 'Copied the image'],
+  ['no tool', { osascript: 127, 'wl-copy': 1, xclip: 127 }, ['osascript', 'wl-copy', 'xclip'], 'Could not copy the image'],
+]
+
+CLIPBOARD_CASES.forEach(([name, exitCodes, tried, toast]) => {
+  test(`copies the image from its copy button with the first clipboard tool that works: ${name}`, async ($, on) => {
+    const { ui, clipboards, toasts } = await copyButton($, on, exitCodes)
+    await ui.press({ key: 'copy-t1' })
+
+    expect(clipboards).toEqual(tried)
+    expect(toasts).toEqual([toast])
+  })
+})
+
+test('leaves the copy button out when showCopyButton is off', { options: { showCopyButton: false } }, async ($, on) => {
+  const { ui } = await copyButton($, on, {})
+
+  expect(await ui.find({ type: 'Button' })).toBeUndefined()
+  expect(await ui.find({ type: 'Image' })).toBeDefined()
+})
+
 test('refuses a missing file', async ($, on) => {
   on('fs.stat', () => ({ deny: 'ENOENT' }))
 
