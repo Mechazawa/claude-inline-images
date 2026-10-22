@@ -1,7 +1,6 @@
 import { expect, mock, test, type TestBody } from 'claude-code/testing'
 
 const TOOL = 'mcp__inline-images__show_image'
-// Every image is copied or converted into the temp dir, the only place Orca reads kitty images from.
 const COPY = /^\/tmp\/claude-inline-images\.abc123\/\d+-\w+\.png$/
 const SIPS = {
   exitCode: 0,
@@ -10,7 +9,7 @@ const SIPS = {
   isStdoutTruncated: false,
   isStderrTruncated: false,
 }
-// Every command answers as sips does, except mktemp, which names the private folder used when TMPDIR is unset.
+// Every command answers as sips does, except mktemp, which names the temp folder.
 const MKTEMP = { ...SIPS, stdout: '/tmp/claude-inline-images.abc123\n' }
 const answer = (argv: readonly string[]) => (argv[0] === 'mktemp' ? MKTEMP : SIPS)
 
@@ -76,7 +75,7 @@ test('shows a PNG as an Image sized to keep its aspect ratio', async ($, on) => 
   on('process.run', (_$, e) => ({ value: answer(e.argv) }))
 
   const ran = await $.tool.call({ tool: TOOL, path: 'cat.png', columns: 40 })
-  expect(JSON.parse(ran.result as string)).toEqual({ file: expect.stringMatching(COPY), width: 400, height: 400, columns: 40 })
+  expect(JSON.parse(ran.result as string)).toEqual({ file: '/x/cat.png', width: 400, height: 400, columns: 40 })
 
   const ui = await $.ui.mount({
     plugin: 'inline-images',
@@ -89,13 +88,19 @@ test('shows a PNG as an Image sized to keep its aspect ratio', async ($, on) => 
   expect(image?.props).toEqual(expect.objectContaining({ columns: 40, rows: 20 }))
 })
 
-const drawnInOrca = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], env: Record<string, string>) => {
-  mock.env(on, { TERM_PROGRAM: 'Orca', ...env })
+const drawnInOrca = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], env: Record<string, string>, size = 1) => {
+  const commands: string[][] = []
+  mock.env(on, { TERM_PROGRAM: 'Orca', ORCA_IMAGE_PROTOCOL: 'kitty', ...env })
   on('ui.render', () => ({ type: 'engine', ref: 0 }))
-  on('fs.stat', () => ({ value: { kind: 'file', size: 1, mtimeMs: 0, isLink: false, realPath: '/x/cat.png' } }))
-  on('process.run', (_$, e) => ({ value: answer(e.argv) }))
+  on('fs.stat', () => ({ value: { kind: 'file', size, mtimeMs: 0, isLink: false, realPath: '/x/cat.png' } }))
+  on('fs.read', () => ({ value: { base64: bmp(2, 3, [[0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]]) } }))
+  on('process.run', (_$, e) => {
+    commands.push([...e.argv])
 
-  const ran = await $.tool.call({ tool: TOOL, path: 'cat.png' })
+    return { value: answer(e.argv) }
+  })
+
+  const ran = await $.tool.call({ tool: TOOL, path: 'cat.png', columns: 2 })
   const ui = await $.ui.mount({
     plugin: 'inline-images',
     surface: 'terminal',
@@ -104,20 +109,37 @@ const drawnInOrca = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[
     viewport: { columns: 120, rows: 40 },
   })
 
-  return { image: await ui.find({ type: 'Image' }), raster: await ui.find({ type: 'Raster' }) }
+  return { commands, image: await ui.find({ type: 'Image' }), raster: await ui.find({ type: 'Raster' }) }
 }
 
-test('shows an Image in Orca when Claude Code is told to draw images', async ($, on) => {
-  const { image } = await drawnInOrca($, on, { ORCA_IMAGE_PROTOCOL: 'kitty', CLAUDE_CODE_FORCE_TERMINAL_IMAGES: '1' })
+test('shows an Image in Orca from a copy in a private temp folder when Claude Code is told to draw images', async ($, on) => {
+  const { commands, image } = await drawnInOrca($, on, { CLAUDE_CODE_FORCE_TERMINAL_IMAGES: '1' })
+  const file = (image?.props.source as { file: string } | undefined)?.file
 
-  expect(image?.props).toEqual(expect.objectContaining({ source: { file: expect.stringMatching(COPY), format: 'png' } }))
+  expect(file).toMatch(COPY)
+  expect(commands).toContainEqual(['mktemp', '-d', '/tmp/claude-inline-images.XXXXXX'])
+  expect(commands).toContainEqual(['cp', '/x/cat.png', file])
 })
 
-test('draws neither an Image nor half blocks in Orca without the flag', async ($, on) => {
-  const { image, raster } = await drawnInOrca($, on, { ORCA_IMAGE_PROTOCOL: 'kitty' })
+test('makes the temp folder in $TMPDIR', async ($, on) => {
+  const { commands } = await drawnInOrca($, on, { CLAUDE_CODE_FORCE_TERMINAL_IMAGES: '1', TMPDIR: '/var/folders/ab/T/' })
 
-  expect(image).toBeUndefined()
-  expect(raster).toBeUndefined()
+  expect(commands).toContainEqual(['mktemp', '-d', '/var/folders/ab/T/claude-inline-images.XXXXXX'])
+})
+
+const HALF_BLOCK_CASES: [string, Record<string, string>, number][] = [
+  ['without the flag', {}, 1],
+  ['inside tmux', { CLAUDE_CODE_FORCE_TERMINAL_IMAGES: '1', TMUX: '/tmp/tmux-501/default,1,0' }, 1],
+  ['for a file over 2 MiB', { CLAUDE_CODE_FORCE_TERMINAL_IMAGES: '1' }, 3 * 1024 * 1024],
+]
+
+HALF_BLOCK_CASES.forEach(([name, env, size]) => {
+  test(`draws half blocks in Orca ${name}`, async ($, on) => {
+    const { image, raster } = await drawnInOrca($, on, env, size)
+
+    expect(image).toBeUndefined()
+    expect(raster).toBeDefined()
+  })
 })
 
 test('converts a JPEG to PNG before drawing it', async ($, on) => {
@@ -132,51 +154,6 @@ test('converts a JPEG to PNG before drawing it', async ($, on) => {
   const ran = await $.tool.call({ tool: TOOL, path: 'cat.jpg' })
   expect(JSON.parse(ran.result as string).file).toMatch(COPY)
   expect(commands.some(argv => argv.includes('format') && argv.includes('/x/cat.jpg'))).toBe(true)
-})
-
-test('copies a PNG into $TMPDIR, where Orca reads it', async ($, on) => {
-  const commands: string[][] = []
-  mock.env(on, { TMPDIR: '/var/folders/ab/T/' })
-  on('fs.stat', () => ({ value: { kind: 'file', size: 1, mtimeMs: 0, isLink: false, realPath: '/x/cat.png' } }))
-  on('process.run', (_$, e) => {
-    commands.push([...e.argv])
-
-    return { value: answer(e.argv) }
-  })
-
-  const ran = await $.tool.call({ tool: TOOL, path: 'cat.png' })
-  const file = JSON.parse(ran.result as string).file as string
-  expect(file).toMatch(/^\/var\/folders\/ab\/T\/claude-inline-images\/\d+-\w+\.png$/)
-  expect(commands).toContainEqual(['cp', '/x/cat.png', file])
-})
-
-test('keeps the temp folder owner-only, private and unpredictable without TMPDIR', async ($, on) => {
-  const commands: string[][] = []
-  on('fs.stat', () => ({ value: { kind: 'file', size: 1, mtimeMs: 0, isLink: false, realPath: '/x/cat.png' } }))
-  on('process.run', (_$, e) => {
-    commands.push([...e.argv])
-
-    return { value: answer(e.argv) }
-  })
-
-  await $.tool.call({ tool: TOOL, path: 'cat.png' })
-  expect(commands).toContainEqual(['mktemp', '-d', '/tmp/claude-inline-images.XXXXXX'])
-  expect(commands).toContainEqual(['mkdir', '-p', '-m', '700', '/tmp/claude-inline-images.abc123'])
-  expect(commands).toContainEqual(['chmod', '700', '/tmp/claude-inline-images.abc123'])
-})
-
-test('converts a JPEG that already sits in the temp folder', async ($, on) => {
-  const commands: string[][] = []
-  on('fs.stat', () => ({ value: { kind: 'file', size: 1, mtimeMs: 0, isLink: false, realPath: '/tmp/claude-inline-images.abc123/cat.jpg' } }))
-  on('process.run', (_$, e) => {
-    commands.push([...e.argv])
-
-    return { value: answer(e.argv) }
-  })
-
-  const ran = await $.tool.call({ tool: TOOL, path: 'cat.jpg' })
-  expect(JSON.parse(ran.result as string).file).toMatch(COPY)
-  expect(commands.some(argv => argv.includes('format') && argv.includes('/tmp/claude-inline-images.abc123/cat.jpg'))).toBe(true)
 })
 
 const buttons = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], exitCodes: Record<string, number>) => {
@@ -228,7 +205,7 @@ CLIPBOARD_CASES.forEach(([name, exitCodes, tried, toast]) => {
     await ui.press({ key: 'copy-t1' })
 
     expect(tools).toEqual(tried)
-    expect(files).toEqual(tried.map(() => expect.stringMatching(COPY)))
+    expect(files).toEqual(tried.map(() => '/x/cat.png'))
     expect(toasts).toEqual([toast])
   })
 })
@@ -245,7 +222,7 @@ VIEWER_CASES.forEach(([name, exitCodes, tried, toast]) => {
     await ui.press({ key: 'open-t1' })
 
     expect(tools).toEqual(tried)
-    expect(files).toEqual(tried.map(() => expect.stringMatching(COPY)))
+    expect(files).toEqual(tried.map(() => '/x/cat.png'))
     expect(toasts).toEqual(toast)
   })
 })
@@ -288,7 +265,7 @@ test('falls back to ImageMagick where sips is missing', async ($, on) => {
 
   const ran = await $.tool.call({ tool: TOOL, path: 'cat.jpg' })
   expect(JSON.parse(ran.result as string)).toEqual(expect.objectContaining({ width: 400, height: 400 }))
-  expect(commands.filter(argv => !['sh', 'mkdir', 'chmod', 'mktemp'].includes(argv[0] ?? '')).map(argv => argv[0])).toEqual(['magick', 'magick'])
+  expect(commands.filter(argv => !['sh', 'mktemp'].includes(argv[0] ?? '')).map(argv => argv[0])).toEqual(['magick', 'magick'])
 })
 
 const PROMPT_ROW = 'c68be964-85c5-4f99-896a-6223a68b0693'
@@ -334,7 +311,7 @@ test('draws a pasted image under its prompt, with a copy button', async ($, on) 
   const ui = await pastedImages($, on)
 
   expect((await ui.find({ type: 'Image' }))?.props).toEqual(
-    expect.objectContaining({ source: { file: expect.stringMatching(COPY), format: 'png' }, columns: 40, rows: 20 }),
+    expect.objectContaining({ source: { file: '/x/paste.png', format: 'png' }, columns: 40, rows: 20 }),
   )
   expect(await ui.find({ type: 'Button' })).toBeDefined()
 })
@@ -386,7 +363,7 @@ test('draws an image Claude reads under the folded group of reads, with a copy b
   const ui = await mountGroup(false)
 
   expect((await ui.find({ type: 'Image' }))?.props).toEqual(
-    expect.objectContaining({ source: { file: expect.stringMatching(COPY), format: 'png' }, columns: 60, rows: 30 }),
+    expect.objectContaining({ source: { file: '/x/cat.png', format: 'png' }, columns: 60, rows: 30 }),
   )
   expect(await ui.find({ type: 'Button' })).toBeDefined()
 })

@@ -5,25 +5,8 @@ import type { Shown } from '../types'
 
 const TOOL = 'show_image'
 const FULL_NAME = 'mcp__inline-images__show_image'
-// Orca only reads kitty image files from the project or the system temp folder ($TMPDIR, not /tmp) and draws an
-// empty frame for any other path, so every image goes through this folder.
-let fallbackDir: Promise<string> | undefined
-
-const tempDir = async ($: EngineInterface) => {
-  const tmp = await $.env.get('TMPDIR').catch(() => undefined)
-
-  if (tmp) {
-    return `${tmp.replace(/\/+$/, '')}/claude-inline-images`
-  }
-
-  // Without TMPDIR, another user could take a fixed name in the shared /tmp first, so use a private, unpredictable one.
-  fallbackDir ??= exec($, ['mktemp', '-d', '/tmp/claude-inline-images.XXXXXX']).then(stdout => stdout.trim())
-
-  return fallbackDir.catch(error => {
-    fallbackDir = undefined
-    throw error
-  })
-}
+// Orca reads kitty image files only from the project or the system temp folder, and only up to 2 MiB.
+const ORCA_MAX_BYTES = 2 * 1024 * 1024
 const MAX_ROWS = 40
 const PASTED_COLUMNS = 40
 const READ_COLUMNS = 60
@@ -84,7 +67,7 @@ const findConverter = async ($: EngineInterface) => {
 
 let converter: Promise<Converter | undefined> | undefined
 
-const exec = async ($: EngineInterface, argv: string[]) => {
+const run = async ($: EngineInterface, argv: string[]) => {
   const { exitCode, stdout, stderr } = await $.process.run(argv)
 
   if (exitCode !== 0) {
@@ -94,15 +77,29 @@ const exec = async ($: EngineInterface, argv: string[]) => {
   return stdout
 }
 
-// Owner-only, so other users cannot read the images in a shared /tmp. chmod fails, and so does the call, when the
-// folder belongs to someone else. Files inside need no mode of their own: nobody else can enter the folder.
-const run = async ($: EngineInterface, argv: string[]) => {
-  const dir = await tempDir($)
-  await exec($, ['mkdir', '-p', '-m', '700', dir])
-  await exec($, ['chmod', '700', dir])
+// mktemp makes the folder owner-only under a name nobody can take first, also in a shared /tmp.
+let tempDir: Promise<string> | undefined
 
-  return exec($, argv)
+const makeTempDir = async ($: EngineInterface) => {
+  const tmp = (await $.env.get('TMPDIR').catch(() => undefined)) || '/tmp'
+
+  return (await run($, ['mktemp', '-d', `${tmp.replace(/\/+$/, '')}/claude-inline-images.XXXXXX`])).trim()
 }
+
+const inTempDir = async ($: EngineInterface, name: string) => {
+  tempDir ??= makeTempDir($).catch(error => {
+    tempDir = undefined
+    throw error
+  })
+
+  return `${await tempDir}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}${name}`
+}
+
+// tmux does not pass kitty graphics through, and Claude Code draws an Image in Orca only with this flag.
+const drawsKittyInOrca = async ($: EngineInterface) =>
+  (await $.env.get('ORCA_IMAGE_PROTOCOL')) === 'kitty' &&
+  (await $.env.get('CLAUDE_CODE_FORCE_TERMINAL_IMAGES')) === '1' &&
+  (await $.env.get('TMUX')) === undefined
 
 const pixelSize = async ($: EngineInterface, using: Converter, file: string) => {
   const stdout = await run($, using.size(file)).catch(() => '')
@@ -113,16 +110,17 @@ const pixelSize = async ($: EngineInterface, using: Converter, file: string) => 
   }
 }
 
-// The terminal decodes PNG only, so every other format is converted first; PNGs are copied into the temp dir.
+// The terminal decodes PNG only, so every other format is converted first. Orca also gets a copy of a PNG, as the
+// PNG can sit outside the folders it reads.
 const asPng = async ($: EngineInterface, using: Converter, file: string) => {
-  const dir = await tempDir($)
+  const isPng = /\.png$/i.test(file)
 
-  if (file.startsWith(`${dir}/`) && /\.png$/i.test(file)) {
+  if (isPng && !(await drawsKittyInOrca($))) {
     return file
   }
 
-  const converted = `${dir}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`
-  await run($, /\.png$/i.test(file) ? ['cp', file, converted] : using.png(file, converted))
+  const converted = await inTempDir($, '.png')
+  await run($, isPng ? ['cp', file, converted] : using.png(file, converted))
 
   return converted
 }
@@ -138,9 +136,10 @@ const cellBox = (shown: Shown, available: number) => {
 
 // Terminals without kitty graphics get the picture as half blocks: each cell shows two stacked pixels.
 const rasterCells = async ($: EngineInterface, using: Converter, file: string, columns: number, rows: number) => {
-  const bmp = `${await tempDir($)}/${Date.now()}-${columns}x${rows}.bmp`
+  const bmp = await inTempDir($, '.bmp')
   await run($, using.bmp(file, bmp, columns, rows * 2))
   const { base64 } = await $.fs.read(bmp, { as: 'bytes' })
+  await $.process.run(['rm', '-f', bmp])
   const view = new DataView(Uint8Array.fromBase64(base64).buffer)
   const offset = view.getUint32(10, true)
   const height = view.getInt32(22, true)
@@ -177,8 +176,8 @@ const CLIPBOARDS = [
   ['sh', '-c', 'xclip -selection clipboard -t image/png -i "$1" > /dev/null 2>&1', 'sh'],
 ]
 
-// xdg-open goes first because Debian's kbd package installs openvt as `open`. It can wait until the viewer it starts is closed, so it
-// runs in the background once it is found.
+// xdg-open goes first because Debian's kbd package installs openvt as `open`. It can wait until the viewer it starts
+// is closed, so it runs in the background once it is found.
 const VIEWERS = [['sh', '-c', 'command -v xdg-open > /dev/null && { xdg-open "$1" > /dev/null 2>&1 & }', 'sh'], ['open']]
 
 const runFirst = async ($: EngineInterface, commands: string[][], file: string) => {
@@ -230,16 +229,13 @@ const picture = async (
       drawn
     )
 
-  // Orca speaks the kitty protocol (ORCA_IMAGE_PROTOCOL=kitty), but Claude Code only draws an Image there when
-  // CLAUDE_CODE_FORCE_TERMINAL_IMAGES=1; without it, only the alt text shows.
-  if ((await $.env.get('TERM_PROGRAM')) === 'ghostty' || (await $.env.get('TERM')) === 'xterm-kitty' ||
-      ((await $.env.get('ORCA_IMAGE_PROTOCOL')) === 'kitty' && (await $.env.get('CLAUDE_CODE_FORCE_TERMINAL_IMAGES')) === '1')) {
-    return withButtons(<Image source={{ file: shown.file, format: 'png' }} {...box} alt={shown.file} />)
-  }
+  const isKitty =
+    (await $.env.get('TERM_PROGRAM')) === 'ghostty' ||
+    (await $.env.get('TERM')) === 'xterm-kitty' ||
+    ((await drawsKittyInOrca($)) && ((await $.fs.stat(shown.file).catch(() => undefined))?.size ?? 0) <= ORCA_MAX_BYTES)
 
-  // Half blocks are unreadable in Orca, so without the flag nothing is drawn there.
-  if ((await $.env.get('ORCA_IMAGE_PROTOCOL')) !== undefined) {
-    return undefined
+  if (isKitty) {
+    return withButtons(<Image source={{ file: shown.file, format: 'png' }} {...box} alt={shown.file} />)
   }
 
   const using = await (converter ??= findConverter($))
