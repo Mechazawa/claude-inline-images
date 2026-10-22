@@ -234,7 +234,7 @@ test('leaves the copy button out when showCopyButton is off', { options: { showC
   expect(await ui.find({ key: 'open-t1' })).toBeDefined()
 })
 
-test('leaves both buttons out when both are off', { options: { showCopyButton: false, showOpenButton: false } }, async ($, on) => {
+test('leaves the buttons out when all are off', { options: { showCopyButton: false, showOpenButton: false, showCollapseButton: false } }, async ($, on) => {
   const { ui } = await buttons($, on, {})
 
   expect(await ui.find({ type: 'Button' })).toBeUndefined()
@@ -245,6 +245,37 @@ test('draws show_image at the defaultColumns width when Claude gives none', { op
   const { ui } = await buttons($, on, {})
 
   expect((await ui.find({ type: 'Image' }))?.props).toEqual(expect.objectContaining({ columns: 60, rows: 30 }))
+})
+
+const LIMIT_CASES: [string, Record<string, number>, { columns: number; rows: number }][] = [
+  ['maxColumns', { maxColumns: 30 }, { columns: 30, rows: 15 }],
+  ['maxRows', { maxRows: 10 }, { columns: 20, rows: 10 }],
+]
+
+LIMIT_CASES.forEach(([name, options, size]) => {
+  test(`keeps an image within ${name}`, { options }, async ($, on) => {
+    const { ui } = await buttons($, on, {})
+
+    expect((await ui.find({ type: 'Image' }))?.props).toEqual(expect.objectContaining(size))
+  })
+})
+
+test('hides the image behind its collapse button and shows it again on expand', async ($, on) => {
+  const { ui } = await buttons($, on, {})
+
+  await ui.press({ key: 'collapse-t1' })
+  expect(await ui.find({ type: 'Image' })).toBeUndefined()
+  expect((await ui.find({ key: 'collapse-t1' }))?.props.label).toBe('expand')
+  expect(await ui.find({ key: 'copy-t1' })).toBeDefined()
+
+  await ui.press({ key: 'collapse-t1' })
+  expect(await ui.find({ type: 'Image' })).toBeDefined()
+})
+
+test('leaves the collapse button out when showCollapseButton is off', { options: { showCollapseButton: false } }, async ($, on) => {
+  const { ui } = await buttons($, on, {})
+
+  expect(await ui.find({ key: 'collapse-t1' })).toBeUndefined()
 })
 
 test('refuses a missing file', async ($, on) => {

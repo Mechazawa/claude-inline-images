@@ -2,6 +2,6 @@ export type Shown = { file: string; width: number; height: number; columns: numb
 
 declare module 'claude-code' {
   interface PluginState {
-    'inline-images': { pasted: Record<string, Shown[]>; reads: Record<string, Shown> }
+    'inline-images': { pasted: Record<string, Shown[]>; reads: Record<string, Shown>; collapsed: Record<string, boolean> }
   }
 }

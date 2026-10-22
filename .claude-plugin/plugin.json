@@ -38,6 +38,24 @@
       "title": "Default width of show_image",
       "description": "Width in terminal columns of an image show_image draws when Claude gives no width",
       "default": 120
+    },
+    "maxColumns": {
+      "type": "number",
+      "title": "Maximum image width",
+      "description": "Widest an image is drawn, in terminal columns, up to 255",
+      "default": 255
+    },
+    "maxRows": {
+      "type": "number",
+      "title": "Maximum image height",
+      "description": "Tallest an image is drawn, in terminal rows",
+      "default": 40
+    },
+    "showCollapseButton": {
+      "type": "boolean",
+      "title": "Show a collapse button",
+      "description": "Draw a button under each image that hides the image until you expand it again",
+      "default": true
     }
   }
 }

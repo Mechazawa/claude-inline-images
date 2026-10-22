@@ -7,7 +7,6 @@ const TOOL = 'show_image'
 const FULL_NAME = 'mcp__inline-images__show_image'
 // Orca reads kitty image files only from the project or the system temp folder, and only up to 2 MiB.
 const ORCA_MAX_BYTES = 2 * 1024 * 1024
-const MAX_ROWS = 40
 const PASTED_COLUMNS = 40
 const READ_COLUMNS = 60
 // A terminal cell is about twice as tall as it is wide.
@@ -125,13 +124,15 @@ const asPng = async ($: EngineInterface, using: Converter, file: string) => {
   return converted
 }
 
-const cellBox = (shown: Shown, available: number) => {
-  const wanted = Math.min(shown.columns, available, 255)
+type Look = { isCopyable: boolean; isOpenable: boolean; isCollapsible: boolean; maxColumns: number; maxRows: number }
+
+const cellBox = (shown: Shown, available: number, { maxColumns, maxRows }: Look) => {
+  const wanted = Math.min(shown.columns, available, maxColumns, 255)
   const rows = Math.round((wanted * shown.height) / shown.width / CELL_ASPECT)
 
-  return rows <= MAX_ROWS
+  return rows <= maxRows
     ? { columns: wanted, rows: Math.max(1, rows) }
-    : { columns: Math.max(1, Math.round((MAX_ROWS * CELL_ASPECT * shown.width) / shown.height)), rows: MAX_ROWS }
+    : { columns: Math.max(1, Math.round((maxRows * CELL_ASPECT * shown.width) / shown.height)), rows: maxRows }
 }
 
 // Terminals without kitty graphics get the picture as half blocks: each cell shows two stacked pixels.
@@ -190,8 +191,6 @@ const runFirst = async ($: EngineInterface, commands: string[][], file: string) 
   return false
 }
 
-type Buttons = { isCopyable: boolean; isOpenable: boolean }
-
 const rasters = new Map<string, Promise<string>>()
 
 const describe = async ($: EngineInterface, using: Converter, path: string, columns: number): Promise<Shown> => {
@@ -211,23 +210,30 @@ const picture = async (
   shown: Shown,
   available: number,
   key: string,
-  buttons: Buttons,
+  look: Look,
 ) => {
-  const box = cellBox(shown, available)
+  const box = cellBox(shown, available, look)
+  const isCollapsed = look.isCollapsible && (await read($, collapsed))[key] === true
   const copy = async () => $.ui.toast((await runFirst($, CLIPBOARDS, shown.file)) ? 'Copied the image' : 'Could not copy the image')
   const open = async () => (await runFirst($, VIEWERS, shown.file)) || $.ui.toast('Could not open the image')
-  const withButtons = (drawn: JSX.Element) =>
-    buttons.isCopyable || buttons.isOpenable ? (
+  const toggle = () => update($, collapsed, all => ({ ...all, [key]: !isCollapsed }))
+  const withButtons = (drawn?: JSX.Element) =>
+    look.isCopyable || look.isOpenable || look.isCollapsible ? (
       <Box flexDirection="column">
         {drawn}
         <Box flexDirection="row" columnGap={1}>
-          {buttons.isCopyable && <Button key={`copy-${key}`} label="copy" dimColor onPress={copy} />}
-          {buttons.isOpenable && <Button key={`open-${key}`} label="open" dimColor onPress={open} />}
+          {look.isCollapsible && <Button key={`collapse-${key}`} label={isCollapsed ? 'expand' : 'collapse'} dimColor onPress={toggle} />}
+          {look.isCopyable && <Button key={`copy-${key}`} label="copy" dimColor onPress={copy} />}
+          {look.isOpenable && <Button key={`open-${key}`} label="open" dimColor onPress={open} />}
         </Box>
       </Box>
     ) : (
       drawn
     )
+
+  if (isCollapsed) {
+    return withButtons()
+  }
 
   const isKitty =
     (await $.env.get('TERM_PROGRAM')) === 'ghostty' ||
@@ -252,6 +258,8 @@ const picture = async (
 }
 
 const pasted = atom({ plugin: 'inline-images', key: 'pasted' } as const, {})
+// Keyed by the key of the drawn image.
+const collapsed = atom({ plugin: 'inline-images', key: 'collapsed' } as const, {})
 // Keyed by the tool_use_id of a Read that returned an image.
 const reads = atom({ plugin: 'inline-images', key: 'reads' } as const, {})
 
@@ -260,7 +268,13 @@ const rowKey = (id: string) => id.slice(0, 23)
 
 
 export const register: Register = (on, options) => {
-  const buttons = { isCopyable: options.showCopyButton !== false, isOpenable: options.showOpenButton !== false }
+  const look = {
+    isCopyable: options.showCopyButton !== false,
+    isOpenable: options.showOpenButton !== false,
+    isCollapsible: options.showCollapseButton !== false,
+    maxColumns: typeof options.maxColumns === 'number' ? options.maxColumns : 255,
+    maxRows: typeof options.maxRows === 'number' ? options.maxRows : 40,
+  }
   const defaultColumns = typeof options.defaultColumns === 'number' ? options.defaultColumns : 120
 
   on('session.start', async ($, e, next) => {
@@ -316,7 +330,7 @@ export const register: Register = (on, options) => {
       return next(e)
     }
 
-    return (await picture($, $.ui.resolve(e), shown, (e.viewport?.columns ?? 80) - 6, e.requestId, buttons)) ?? next(e)
+    return (await picture($, $.ui.resolve(e), shown, (e.viewport?.columns ?? 80) - 6, e.requestId, look)) ?? next(e)
   })
 
   if (options.showReadImages !== false) {
@@ -349,7 +363,7 @@ export const register: Register = (on, options) => {
       return (
         <elements.Box flexDirection="column">
           {await next(e)}
-          {await picture($, elements, shown, (e.viewport?.columns ?? 80) - 6, e.requestId, buttons)}
+          {await picture($, elements, shown, (e.viewport?.columns ?? 80) - 6, e.requestId, look)}
         </elements.Box>
       )
     })
@@ -365,7 +379,7 @@ export const register: Register = (on, options) => {
 
       const elements = $.ui.resolve(e)
       const available = (e.viewport?.columns ?? 80) - 6
-      const pictures = await Promise.all(shown.map((one, index) => picture($, elements, one, available, `${e.requestId}-${index}`, buttons)))
+      const pictures = await Promise.all(shown.map((one, index) => picture($, elements, one, available, `${e.requestId}-${index}`, look)))
 
       return (
         <elements.Box flexDirection="column">
@@ -420,7 +434,7 @@ export const register: Register = (on, options) => {
 
     const elements = $.ui.resolve(e)
     const available = (e.viewport?.columns ?? 80) - 6
-    const pictures = await Promise.all(shown.map((one, index) => picture($, elements, one, available, `${e.requestId}-${index}`, buttons)))
+    const pictures = await Promise.all(shown.map((one, index) => picture($, elements, one, available, `${e.requestId}-${index}`, look)))
 
     return (
       <elements.Box flexDirection="column">

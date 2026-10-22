@@ -55,9 +55,15 @@ Claude calls `show_image` with these inputs:
 | `path` | Absolute or working-directory-relative path of the image |
 | `columns` | Width in terminal columns, 120 by default |
 
-The image keeps its aspect ratio. It is never wider than the transcript and never taller than 40 rows.
+The image keeps its aspect ratio. It is never wider than the transcript.
 
-To change the default width, open `/config` and set `inline-images.defaultColumns`.
+To change the size limits, open `/config` and set these:
+
+| Setting | Description |
+| --- | --- |
+| `inline-images.defaultColumns` | Width of `show_image` when Claude gives none, 120 by default |
+| `inline-images.maxColumns` | Maximum width of every image, 255 by default |
+| `inline-images.maxRows` | Maximum height of every image, 40 by default |
 
 ### Pasted images
 
@@ -89,6 +95,12 @@ Preview on macOS. The mod uses `xdg-open` on Linux and `open` on macOS. Like the
 where Claude Code runs.
 
 To turn this off, open `/config` and set `inline-images.showOpenButton` to `false`.
+
+### Collapsing an image
+
+Press `[ collapse ]` to hide an image and keep only its buttons. Press `[ expand ]` to show it again.
+
+To turn this off, open `/config` and set `inline-images.showCollapseButton` to `false`.
 
 ## Requirements
 
