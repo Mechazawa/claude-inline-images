@@ -38,7 +38,7 @@ const rasterCells = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[
   })
   const raster = await ui.find({ type: 'Raster' })
 
-  return Array.from(new Uint32Array(Uint8Array.fromBase64(raster?.props.cells as string).buffer))
+  return { ui, cells: Array.from(new Uint32Array(Uint8Array.fromBase64(raster?.props.cells as string).buffer)) }
 }
 
 test('draws half blocks where the terminal has no kitty graphics', async ($, on) => {
@@ -46,7 +46,7 @@ test('draws half blocks where the terminal has no kitty graphics', async ($, on)
   const white = [255, 255, 255]
   const red = [0, 0, 255]
   const green = [0, 255, 0]
-  const cells = await rasterCells($, on, bmp(2, 3, [[...blue, ...white], [...red, ...green]]))
+  const { cells } = await rasterCells($, on, bmp(2, 3, [[...blue, ...white], [...red, ...green]]))
 
   expect(cells).toEqual([0x2580, 0xff0000, 0x0000ff, 0x2580, 0x00ff00, 0xffffff])
 })
@@ -54,9 +54,15 @@ test('draws half blocks where the terminal has no kitty graphics', async ($, on)
 test('leaves transparent pixels in the terminal background', async ($, on) => {
   const clear = [0, 0, 0, 0]
   const red = [0, 0, 255, 255]
-  const cells = await rasterCells($, on, bmp(-2, 4, [[...clear, ...clear], [...red, ...clear]]))
+  const { cells } = await rasterCells($, on, bmp(-2, 4, [[...clear, ...clear], [...red, ...clear]]))
 
   expect(cells).toEqual([0x2584, 0xff0000, 0x01000000, 0x20, 0x01000000, 0x01000000])
+})
+
+test('draws the copy button under half blocks', async ($, on) => {
+  const { ui } = await rasterCells($, on, bmp(1, 3, [[0, 0, 0, 0, 0, 0]]))
+
+  expect(await ui.find({ type: 'Button' })).toBeDefined()
 })
 
 test('shows a PNG as an Image sized to keep its aspect ratio', async ($, on) => {
@@ -94,6 +100,7 @@ test('converts a JPEG to PNG before drawing it', async ($, on) => {
 
 const copyButton = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1], exitCodes: Record<string, number>) => {
   const clipboards: string[] = []
+  const copiedFiles: (string | undefined)[] = []
   const toasts: string[] = []
   mock.env(on, { TERM_PROGRAM: 'ghostty' })
   on('fs.stat', () => ({ value: { kind: 'file', size: 1, mtimeMs: 0, isLink: false, realPath: '/x/cat.png' } }))
@@ -105,6 +112,7 @@ const copyButton = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1
     }
 
     clipboards.push(clipboard)
+    copiedFiles.push(e.argv.at(-1))
 
     return { value: { ...SIPS, exitCode: exitCodes[clipboard] ?? 0 } }
   })
@@ -124,7 +132,7 @@ const copyButton = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1
     viewport: { columns: 120, rows: 40 },
   })
 
-  return { ui, clipboards, toasts }
+  return { ui, clipboards, copiedFiles, toasts }
 }
 
 const CLIPBOARD_CASES: [string, Record<string, number>, string[], string][] = [
@@ -135,10 +143,11 @@ const CLIPBOARD_CASES: [string, Record<string, number>, string[], string][] = [
 
 CLIPBOARD_CASES.forEach(([name, exitCodes, tried, toast]) => {
   test(`copies the image from its copy button with the first clipboard tool that works: ${name}`, async ($, on) => {
-    const { ui, clipboards, toasts } = await copyButton($, on, exitCodes)
+    const { ui, clipboards, copiedFiles, toasts } = await copyButton($, on, exitCodes)
     await ui.press({ key: 'copy-t1' })
 
     expect(clipboards).toEqual(tried)
+    expect(copiedFiles).toEqual(tried.map(() => '/x/cat.png'))
     expect(toasts).toEqual([toast])
   })
 })
@@ -207,17 +216,20 @@ const pastedImages = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>
     viewport: { columns: 120, rows: 40 },
   })
 
-  return ui.find({ type: 'Image' })
+  return ui
 }
 
-test('draws a pasted image under its prompt', async ($, on) => {
-  const image = await pastedImages($, on)
+test('draws a pasted image under its prompt, with a copy button', async ($, on) => {
+  const ui = await pastedImages($, on)
 
-  expect(image?.props).toEqual(expect.objectContaining({ source: { file: '/x/paste.png', format: 'png' }, columns: 40, rows: 20 }))
+  expect((await ui.find({ type: 'Image' }))?.props).toEqual(
+    expect.objectContaining({ source: { file: '/x/paste.png', format: 'png' }, columns: 40, rows: 20 }),
+  )
+  expect(await ui.find({ type: 'Button' })).toBeDefined()
 })
 
 test('leaves pasted images out when showPastedImages is off', { options: { showPastedImages: false } }, async ($, on) => {
-  expect(await pastedImages($, on)).toBeUndefined()
+  expect(await (await pastedImages($, on)).find({ type: 'Image' })).toBeUndefined()
 })
 
 const READ_INPUT = { file_path: '/x/cat.png' }
@@ -258,11 +270,14 @@ const readImage = async ($: Parameters<TestBody>[0], on: Parameters<TestBody>[1]
   return { mountGroup, mountRow }
 }
 
-test('draws an image Claude reads under the folded group of reads', async ($, on) => {
+test('draws an image Claude reads under the folded group of reads, with a copy button', async ($, on) => {
   const { mountGroup } = await readImage($, on)
-  const image = await (await mountGroup(false)).find({ type: 'Image' })
+  const ui = await mountGroup(false)
 
-  expect(image?.props).toEqual(expect.objectContaining({ source: { file: '/x/cat.png', format: 'png' }, columns: 60, rows: 30 }))
+  expect((await ui.find({ type: 'Image' }))?.props).toEqual(
+    expect.objectContaining({ source: { file: '/x/cat.png', format: 'png' }, columns: 60, rows: 30 }),
+  )
+  expect(await ui.find({ type: 'Button' })).toBeDefined()
 })
 
 test('draws it under the Read row, and not again under the group, once the group is expanded', async ($, on) => {

@@ -148,12 +148,6 @@ const CLIPBOARDS = [
   ['sh', '-c', 'xclip -selection clipboard -t image/png -i "$1" > /dev/null 2>&1', 'sh'],
 ]
 
-const copyImage = ($: EngineInterface, file: string) =>
-  CLIPBOARDS.reduce(
-    async (copied, argv) => (await copied) || (await $.process.run([...argv, file]).catch(() => undefined))?.exitCode === 0,
-    Promise.resolve(false),
-  )
-
 const rasters = new Map<string, Promise<string>>()
 
 const describe = async ($: EngineInterface, using: Converter, path: string, columns?: number): Promise<Shown> => {
@@ -176,7 +170,15 @@ const picture = async (
   isCopyable: boolean,
 ) => {
   const box = cellBox(shown, available)
-  const copy = async () => $.ui.toast((await copyImage($, shown.file)) ? 'Copied the image' : 'Could not copy the image')
+  const copy = async () => {
+    for (const argv of CLIPBOARDS) {
+      if ((await $.process.run([...argv, shown.file]).catch(() => undefined))?.exitCode === 0) {
+        return $.ui.toast('Copied the image')
+      }
+    }
+
+    return $.ui.toast('Could not copy the image')
+  }
   const withCopyButton = (drawn: JSX.Element) =>
     isCopyable ? (
       <Box flexDirection="column">
