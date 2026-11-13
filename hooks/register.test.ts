@@ -247,8 +247,15 @@ test('draws show_image at the defaultColumns width when Claude gives none', { op
   expect((await ui.find({ type: 'Image' }))?.props).toEqual(expect.objectContaining({ columns: 60, rows: 30 }))
 })
 
+// With no cell size to measure, the tests use the 16x32 fallback: a 400x400 image takes 25x13 cells.
+test('draws show_image at the image own size by default, never enlarged', async ($, on) => {
+  const { ui } = await buttons($, on, {})
+
+  expect((await ui.find({ type: 'Image' }))?.props).toEqual(expect.objectContaining({ columns: 25, rows: 13 }))
+})
+
 const LIMIT_CASES: [string, Record<string, number>, { columns: number; rows: number }][] = [
-  ['maxColumns', { maxColumns: 30 }, { columns: 30, rows: 15 }],
+  ['maxColumns', { maxColumns: 20 }, { columns: 20, rows: 10 }],
   ['maxRows', { maxRows: 10 }, { columns: 20, rows: 10 }],
 ]
 
@@ -342,7 +349,7 @@ test('draws a pasted image under its prompt, with a copy button', async ($, on) 
   const ui = await pastedImages($, on)
 
   expect((await ui.find({ type: 'Image' }))?.props).toEqual(
-    expect.objectContaining({ source: { file: '/x/paste.png', format: 'png' }, columns: 40, rows: 20 }),
+    expect.objectContaining({ source: { file: '/x/paste.png', format: 'png' }, columns: 25, rows: 13 }),
   )
   expect(await ui.find({ type: 'Button' })).toBeDefined()
 })
@@ -394,7 +401,7 @@ test('draws an image Claude reads under the folded group of reads, with a copy b
   const ui = await mountGroup(false)
 
   expect((await ui.find({ type: 'Image' }))?.props).toEqual(
-    expect.objectContaining({ source: { file: '/x/cat.png', format: 'png' }, columns: 60, rows: 30 }),
+    expect.objectContaining({ source: { file: '/x/cat.png', format: 'png' }, columns: 25, rows: 13 }),
   )
   expect(await ui.find({ type: 'Button' })).toBeDefined()
 })

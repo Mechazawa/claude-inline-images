@@ -7,10 +7,12 @@ const TOOL = 'show_image'
 const FULL_NAME = 'mcp__inline-images__show_image'
 // Orca reads kitty image files only from the project or the system temp folder, and only up to 2 MiB.
 const ORCA_MAX_BYTES = 2 * 1024 * 1024
-const PASTED_COLUMNS = 40
-const READ_COLUMNS = 60
-// A terminal cell is about twice as tall as it is wide.
-const CELL_ASPECT = 2
+// Images are drawn at their own size (one image pixel per screen pixel) and only shrunk to fit, never enlarged. A `columns` of 0 in a Shown means "native size"; a positive one is an explicit width (show_image's columns).
+const NATIVE = 0
+// Used when the terminal's cell size in pixels cannot be measured.
+const FALLBACK_CELL: Cell = { w: 16, h: 32 }
+// An Image's rgba source holds at most 2 MiB decoded.
+const MAX_RGBA_BYTES = 2 * 1024 * 1024
 const DEFAULT_COLOR = 0x01000000
 const SPACE = 0x20
 const UPPER_HALF_BLOCK = 0x2580
@@ -126,14 +128,108 @@ const asPng = async ($: EngineInterface, using: Converter, file: string) => {
 
 type Look = { isCopyable: boolean; isOpenable: boolean; isCollapsible: boolean; maxColumns: number; maxRows: number }
 
-const cellBox = (shown: Shown, available: number, { maxColumns, maxRows }: Look) => {
-  const wanted = Math.min(shown.columns, available, maxColumns, 255)
-  const rows = Math.round((wanted * shown.height) / shown.width / CELL_ASPECT)
+// The terminal's cell size in pixels. The mod API does not expose it, so it is read with TIOCGWINSZ from
+// the tty of the nearest ancestor process that has one (Claude Code's own terminal); kitty, Ghostty, iTerm2 and
+// WezTerm fill in the pixel fields.
+type Cell = { w: number; h: number }
 
-  return rows <= maxRows
-    ? { columns: wanted, rows: Math.max(1, rows) }
-    : { columns: Math.max(1, Math.round((maxRows * CELL_ASPECT * shown.width) / shown.height)), rows: maxRows }
+const CELL_SCRIPT = `
+import fcntl, os, struct, subprocess, termios
+pid = os.getppid()
+for _ in range(12):
+    out = subprocess.run(['ps', '-o', 'ppid=,tty=', '-p', str(pid)], capture_output=True, text=True).stdout.split()
+    if len(out) < 2:
+        break
+    ppid, tty = out
+    if tty not in ('?', '??', '-'):
+        fd = os.open('/dev/' + tty, os.O_RDONLY | os.O_NOCTTY)
+        r, c, x, y = struct.unpack('HHHH', fcntl.ioctl(fd, termios.TIOCGWINSZ, b'\\0' * 8))
+        if r and c and x and y:
+            print(round(x / c), round(y / r))
+        break
+    pid = int(ppid)
+`
+
+const measureCell = async ($: EngineInterface): Promise<Cell> => {
+  const out = await run($, ['python3', '-I', '-c', CELL_SCRIPT]).catch(() => '')
+  const [w, h] = out.trim().split(/\s+/).map(Number)
+
+  return w && h && w > 0 && h > 0 ? { w, h } : FALLBACK_CELL
 }
+
+// Measured again when the width changes, which also covers a font size change in most cases.
+let cellCache: { columns: number; cell: Promise<Cell> } | undefined
+
+const cellSize = ($: EngineInterface, columns: number) => {
+  if (cellCache?.columns !== columns) {
+    cellCache = { columns, cell: measureCell($) }
+  }
+
+  return cellCache.cell
+}
+
+// The cells an image takes. At native size the box is rounded up to whole cells and `pad` is set, so the picture can
+// be padded with transparency to fill it exactly instead of being stretched.
+const cellBox = (shown: Shown, available: number, { maxColumns, maxRows }: Look, cell: Cell) => {
+  const limitColumns = Math.max(1, Math.min(available, maxColumns, 255))
+  const limitRows = Math.max(1, Math.min(maxRows, 255))
+  const wanted = shown.columns > NATIVE ? (shown.columns * cell.w) / shown.width : 1
+  const scale = Math.min(wanted, (limitColumns * cell.w) / shown.width, (limitRows * cell.h) / shown.height)
+
+  if (shown.columns === NATIVE && scale >= 1) {
+    return { columns: Math.ceil(shown.width / cell.w), rows: Math.ceil(shown.height / cell.h), pad: true }
+  }
+
+  return {
+    columns: Math.min(limitColumns, Math.max(1, Math.round((shown.width * scale) / cell.w))),
+    rows: Math.min(limitRows, Math.max(1, Math.round((shown.height * scale) / cell.h))),
+    pad: false,
+  }
+}
+
+// Reads a BMP the converter wrote into a pixel getter returning [r, g, b, a].
+const bmpPixels = (base64: string) => {
+  const view = new DataView(Uint8Array.fromBase64(base64).buffer)
+  const offset = view.getUint32(10, true)
+  const width = view.getInt32(18, true)
+  const height = view.getInt32(22, true)
+  const bytesPerPixel = view.getUint16(28, true) / 8
+  const stride = Math.ceil((width * bytesPerPixel) / 4) * 4
+
+  return (x: number, y: number) => {
+    const at = offset + (height < 0 ? y : Math.abs(height) - 1 - y) * stride + x * bytesPerPixel
+
+    return [view.getUint8(at + 2), view.getUint8(at + 1), view.getUint8(at), bytesPerPixel === 4 ? view.getUint8(at + 3) : 255]
+  }
+}
+
+// The picture at its own pixels, top-left in a transparent canvas exactly the size of its cell box, so the terminal
+// draws it 1:1 with no resampling. Undefined when it is too big for an rgba source.
+const paddedRgba = async ($: EngineInterface, using: Converter, shown: Shown, box: { columns: number; rows: number }, cell: Cell) => {
+  const width = box.columns * cell.w
+  const height = box.rows * cell.h
+
+  if (width > 2048 || height > 2048 || width * height * 4 > MAX_RGBA_BYTES) {
+    return undefined
+  }
+
+  const bmp = await inTempDir($, '.bmp')
+  await run($, using.bmp(shown.file, bmp, shown.width, shown.height))
+  const { base64 } = await $.fs.read(bmp, { as: 'bytes' })
+  await $.process.run(['rm', '-f', bmp])
+  const pixel = bmpPixels(base64)
+  const canvas = new Uint8Array(width * height * 4)
+
+  for (let y = 0; y < shown.height; y++) {
+    for (let x = 0; x < shown.width; x++) {
+      canvas.set(pixel(x, y), (y * width + x) * 4)
+    }
+  }
+
+  return { rgba: canvas.toBase64(), width, height }
+}
+
+const padded = new Map<string, Promise<{ rgba: string; width: number; height: number } | undefined>>()
 
 // Terminals without kitty graphics get the picture as half blocks: each cell shows two stacked pixels.
 const rasterCells = async ($: EngineInterface, using: Converter, file: string, columns: number, rows: number) => {
@@ -212,7 +308,8 @@ const picture = async (
   key: string,
   look: Look,
 ) => {
-  const box = cellBox(shown, available, look)
+  const cell = await cellSize($, available)
+  const { pad, ...box } = cellBox(shown, available, look, cell)
   const isCollapsed = look.isCollapsible && (await read($, collapsed))[key] === true
   const copy = async () => $.ui.toast((await runFirst($, CLIPBOARDS, shown.file)) ? 'Copied the image' : 'Could not copy the image')
   const open = async () => (await runFirst($, VIEWERS, shown.file)) || $.ui.toast('Could not open the image')
@@ -240,11 +337,23 @@ const picture = async (
     (await $.env.get('TERM')) === 'xterm-kitty' ||
     ((await drawsKittyInOrca($)) && ((await $.fs.stat(shown.file).catch(() => undefined))?.size ?? 0) <= ORCA_MAX_BYTES)
 
-  if (isKitty) {
-    return withButtons(<Image source={{ file: shown.file, format: 'png' }} {...box} alt={shown.file} />)
-  }
-
   const using = await (converter ??= findConverter($))
+
+  if (isKitty) {
+    const paddedKey = `${shown.file}:${box.columns}x${box.rows}:${cell.w}x${cell.h}`
+    const exact =
+      pad && using !== undefined
+        ? (padded.get(paddedKey) ?? paddedRgba($, using, shown, box, cell).catch(() => undefined))
+        : undefined
+
+    if (exact !== undefined) {
+      padded.set(paddedKey, exact)
+    }
+
+    const source = (await exact) ?? { file: shown.file, format: 'png' as const }
+
+    return withButtons(<Image source={source} {...box} alt={shown.file} />)
+  }
 
   if (using === undefined) {
     return undefined
@@ -275,7 +384,7 @@ export const register: Register = (on, options) => {
     maxColumns: typeof options.maxColumns === 'number' ? options.maxColumns : 255,
     maxRows: typeof options.maxRows === 'number' ? options.maxRows : 40,
   }
-  const defaultColumns = typeof options.defaultColumns === 'number' ? options.defaultColumns : 120
+  const defaultColumns = typeof options.defaultColumns === 'number' && options.defaultColumns > 0 ? options.defaultColumns : NATIVE
 
   on('session.start', async ($, e, next) => {
     await $.tool.register({
@@ -287,7 +396,15 @@ export const register: Register = (on, options) => {
         type: 'object',
         properties: {
           path: { type: 'string', description: 'Absolute or working-directory-relative path of a PNG, JPEG, GIF, WebP, HEIC or TIFF file' },
-          columns: { type: 'integer', minimum: 4, maximum: 255, description: `Width in terminal columns, ${defaultColumns} by default` },
+          columns: {
+            type: 'integer',
+            minimum: 4,
+            maximum: 255,
+            description:
+              defaultColumns === NATIVE
+                ? "Width in terminal columns. Omit it to show the image at its own size (shrunk only if it doesn't fit)"
+                : `Width in terminal columns, ${defaultColumns} by default`,
+          },
         },
         required: ['path'],
       },
@@ -342,7 +459,7 @@ export const register: Register = (on, options) => {
       }
 
       const using = await (converter ??= findConverter($)).catch(() => undefined)
-      const shown = using && (await describe($, using, e.file_path, READ_COLUMNS).catch(() => undefined))
+      const shown = using && (await describe($, using, e.file_path, NATIVE).catch(() => undefined))
 
       if (shown) {
         await update($, reads, all => ({ ...all, [e.tool_use_id]: shown })).catch(() => undefined)
@@ -418,7 +535,7 @@ export const register: Register = (on, options) => {
     const using = await (converter ??= findConverter($)).catch(() => undefined)
 
     if (using !== undefined) {
-      const shown = await Promise.all(files.map(file => describe($, using, file, PASTED_COLUMNS).catch(() => undefined)))
+      const shown = await Promise.all(files.map(file => describe($, using, file, NATIVE).catch(() => undefined)))
       await update($, pasted, all => ({ ...all, [rowKey(row)]: shown.filter(one => one !== undefined) })).catch(() => undefined)
     }
 

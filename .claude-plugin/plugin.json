@@ -36,8 +36,8 @@
     "defaultColumns": {
       "type": "number",
       "title": "Default width of show_image",
-      "description": "Width in terminal columns of an image show_image draws when Claude gives no width",
-      "default": 120
+      "description": "Width in terminal columns of an image show_image draws when Claude gives no width; 0 draws it at its own size",
+      "default": 0
     },
     "maxColumns": {
       "type": "number",

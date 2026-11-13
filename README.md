@@ -53,29 +53,33 @@ Claude calls `show_image` with these inputs:
 | Input | Description |
 | --- | --- |
 | `path` | Absolute or working-directory-relative path of the image |
-| `columns` | Width in terminal columns, 120 by default |
+| `columns` | Width in terminal columns. Without it, the image is drawn at its own size |
 
 The image keeps its aspect ratio. It is never wider than the transcript.
+
+At its own size, one image pixel is one screen pixel: a large image is shrunk to fit the transcript and `maxRows`,
+and a small one is never enlarged. The mod reads the terminal's cell size in pixels with `python3`; without it, it
+assumes 16x32-pixel cells.
 
 To change the size limits, open `/config` and set these:
 
 | Setting | Description |
 | --- | --- |
-| `inline-images.defaultColumns` | Width of `show_image` when Claude gives none, 120 by default |
+| `inline-images.defaultColumns` | Width of `show_image` when Claude gives none. 0, the default, draws the image at its own size |
 | `inline-images.maxColumns` | Maximum width of every image, 255 by default |
 | `inline-images.maxRows` | Maximum height of every image, 40 by default |
 
 ### Pasted images
 
-When you paste an image into the prompt, the mod draws it 40 columns wide under your message. Images pasted
+When you paste an image into the prompt, the mod draws it at its own size under your message. Images pasted
 before the mod was loaded are not drawn.
 
 To turn this off, open `/config` and set `inline-images.showPastedImages` to `false`.
 
 ### Images Claude reads
 
-When Claude opens an image with `Read` (a screenshot it took, a chart it made), the mod draws that image 60 columns
-wide under the Read line in the transcript. Reads are usually folded into one line such as `Read 3 files`; the images
+When Claude opens an image with `Read` (a screenshot it took, a chart it made), the mod draws that image at its own
+size under the Read line in the transcript. Reads are usually folded into one line such as `Read 3 files`; the images
 go under that line. Images read before the mod was loaded are not drawn.
 
 To turn this off, open `/config` and set `inline-images.showReadImages` to `false`.
